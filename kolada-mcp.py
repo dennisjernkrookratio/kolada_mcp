@@ -3,19 +3,22 @@ import statistics  # For median and mean calculation
 import sys
 import traceback
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, TypedDict
+from typing import Any, AsyncIterator, TypedDict, cast
 
 import httpx
+import numpy as np
+import polars as pl
 
 # Use the base Context provided by the framework for type hinting in tools
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import Context
+from sentence_transformers import SentenceTransformer
 
 ###############################################################################
 # 1) Global Constants
 ###############################################################################
-BASE_URL = "https://api.kolada.se/v2"
-KPI_PER_PAGE = 5000
+BASE_URL: str = "https://api.kolada.se/v2"
+KPI_PER_PAGE: int = 5000
 
 ###############################################################################
 # 2) Typed structures for your Kolada data
@@ -81,11 +84,13 @@ def _group_kpis_by_operating_area(
     """Groups KPIs by their 'operating_area' field."""
     grouped: dict[str, list[KoladaKpi]] = {}
     for kpi in kpis:
-        operating_area_field = kpi.get("operating_area") or "Unknown"
-        areas = [a.strip() for a in operating_area_field.split(",")]
+        operating_area_field: str = kpi.get("operating_area", "Unknown")
+        areas: list[str] = [a.strip() for a in operating_area_field.split(",")]
         for area in areas:
             if area:
-                grouped.setdefault(area, []).append(kpi)
+                if area not in grouped:
+                    grouped[area] = []
+                grouped[area].append(kpi)
     return grouped
 
 
@@ -93,18 +98,18 @@ def _get_operating_areas_summary(
     kpis: list[KoladaKpi],
 ) -> list[dict[str, str | int]]:
     """Generates a summary list of operating areas and their KPI counts."""
-    grouped = _group_kpis_by_operating_area(kpis)
+    grouped: dict[str, list[KoladaKpi]] = _group_kpis_by_operating_area(kpis)
     areas_with_counts: list[dict[str, str | int]] = []
     for area in sorted(grouped.keys()):
-        areas_with_counts.append(
-            {"operating_area": area, "kpi_count": len(grouped[area])}
-        )
+        area_dict: dict[str, str | int] = {
+            "operating_area": area,
+            "kpi_count": len(grouped[area]),
+        }
+        areas_with_counts.append(area_dict)
     return areas_with_counts
 
 
-async def _fetch_data_from_kolada(
-    url: str, params: dict[str, Any] | None = None
-) -> dict[str, Any]:
+async def _fetch_data_from_kolada(url: str) -> dict[str, Any]:
     """
     Helper function to fetch data from Kolada with consistent error handling.
     Now includes pagination support: if 'next_page' is present, we keep fetching
@@ -114,62 +119,50 @@ async def _fetch_data_from_kolada(
     the same 'next_page' repeatedly, we break.
     """
     combined_values: list[dict[str, Any]] = []
-    params = params or {}
-    visited_urls = set()
+    visited_urls: set[str] = set()
 
+    this_url: str | None = url
     async with httpx.AsyncClient() as client:
-        while url and url not in visited_urls:
-            visited_urls.add(url)
-            print(
-                f"[Kolada MCP] Fetching page: {url} with params: {params}",
-                file=sys.stderr,
-            )
+        while this_url and this_url not in visited_urls:
+            visited_urls.add(this_url)
+            print(f"[Kolada MCP] Fetching page: {this_url}", file=sys.stderr)
             try:
-                resp = await client.get(url, params=params, timeout=60.0)
+                resp = await client.get(this_url, timeout=60.0)
                 resp.raise_for_status()  # Raises HTTPStatusError if status >= 400
-                data = resp.json()
+                data: dict[str, Any] = resp.json()
             except (
                 httpx.RequestError,
                 httpx.HTTPStatusError,
                 json.JSONDecodeError,
             ) as ex:
-                error_msg = f"Error accessing Kolada API: {ex}"
+                error_msg: str = f"Error accessing Kolada API: {ex}"
                 print(f"[Kolada MCP] {error_msg}", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
-                return {
-                    "error": error_msg,
-                    "details": str(ex),
-                    "endpoint": url,
-                    "params": params,
-                }
+                return {"error": error_msg, "details": str(ex), "endpoint": this_url}
 
             # If there's an error key, just return it
             if "error" in data:
                 return data
 
             # Merge this page's values into combined
-            page_values = data.get("values", [])
+            page_values: list[dict[str, Any]] = data.get("values", [])
             combined_values.extend(page_values)
 
             # Check if there's a next_page
-            next_url = data.get("next_page")
+            next_url: str | None = data.get("next_page")
             if not next_url:
                 # No more pages
-                url = None
+                this_url = None
             else:
-                # Prepare for next iteration
-                url = next_url
-                # Typically, next_page already has query params, so we reset:
-                params = {}
+                this_url = next_url
 
-    # Return a single merged structure
     return {
         "count": len(combined_values),
         "values": combined_values,
     }
 
 
-def _safe_get_lifespan_context(ctx: Context) -> KoladaLifespanContext | None:  # type: ignore[Context]
+def _safe_get_lifespan_context(ctx: Context) -> KoladaLifespanContext | None:
     """
     Safely retrieves the KoladaLifespanContext from the standard context structure.
     Returns None if the context is invalid or incomplete.
@@ -183,11 +176,361 @@ def _safe_get_lifespan_context(ctx: Context) -> KoladaLifespanContext | None:  #
     ):
         print("[Kolada MCP] Invalid or incomplete context structure.", file=sys.stderr)
         return None
-    return ctx.request_context.lifespan_context  # type: ignore
+    # Type cast to ensure we have the correct structure
+    return cast(KoladaLifespanContext, ctx.request_context.lifespan_context)
+
+
+def _parse_years_param(year_str: str) -> list[str]:
+    """
+    Parses a comma-separated string of years into a list (e.g. "2020,2021" -> ["2020","2021"]).
+    If empty or invalid, returns an empty list.
+    """
+    if not year_str:
+        return []
+    parts: list[str] = [y.strip() for y in year_str.split(",") if y.strip()]
+    return parts
+
+
+def _fetch_and_group_data_by_municipality(
+    data: dict[str, Any],
+    gender: str,
+) -> dict[str, dict[str, float]]:
+    """
+    From a Kolada data response containing multiple years, extracts numeric values
+    per (municipality, year) for the specified gender. Returns a structure:
+    {
+      "0180": { "2020": 123.0, "2021": 130.5 },
+      "1860": { "2020": 90.0,  "2021": 95.0 },
+      ...
+    }
+    Skips any entries where 'municipality' or 'period' is missing, or the value is invalid.
+    Utilizes Polars to make these transformations more efficient.
+    """
+    raw_rows: list[dict[str, Any]] = []
+
+    values_data: list[dict[str, Any]] = data.get("values", [])
+    for item in values_data:
+        municipality_id: str | None = item.get("municipality")
+        raw_period: int | str | None = item.get("period")
+        if not municipality_id or raw_period is None:
+            print(
+                f"Warning: Skipping due to missing municipality_id or period: {item}",
+                file=sys.stderr,
+            )
+            continue
+
+        period_str: str = str(raw_period)  # convert to string
+
+        # Flatten out the sublist
+        for subval in item.get("values", []):
+            row_gender: str | None = subval.get("gender")
+            val: Any = subval.get("value")
+
+            row: dict[str, Any] = {
+                "municipality": municipality_id,
+                "period": period_str,
+                "gender": row_gender,
+                "value": val,
+            }
+            raw_rows.append(row)
+
+    df: pl.DataFrame = pl.from_dicts(raw_rows)
+    if df.is_empty():
+        return {}
+
+    # Filter by the specified gender and non-null value
+    df_filtered: pl.DataFrame = df.filter(
+        (pl.col("gender") == gender) & (pl.col("value").is_not_null())
+    ).drop(["gender"])
+
+    if df_filtered.is_empty():
+        return {}
+
+    # Cast the 'value' column to float
+    df_cast: pl.DataFrame = df_filtered.with_columns(
+        value=pl.col("value").cast(pl.Float64, strict=False)
+    )
+
+    municipality_dict: dict[str, dict[str, float]] = {}
+    for row in df_cast.to_dicts():
+        m_id: str = row["municipality"]
+        p_str: str = row["period"]
+        v_val: float = row["value"]
+        if m_id not in municipality_dict:
+            municipality_dict[m_id] = {}
+        municipality_dict[m_id][p_str] = v_val
+
+    return municipality_dict
 
 
 ###############################################################################
-# 4) Server Lifespan: Fetch & Cache Kolada Metadata + Municipalities
+# 4) Shared Refactoring Helpers
+###############################################################################
+
+
+def _calculate_summary_stats(
+    values: list[float], prefix: str = ""
+) -> dict[str, float | int | None]:
+    """
+    Given a list of float values, computes min, max, mean, median, and count.
+    Uses an optional prefix for keys (e.g., "" vs "delta_").
+    """
+    summary_stats: dict[str, float | int | None] = {
+        f"{prefix}min": None,
+        f"{prefix}max": None,
+        f"{prefix}mean": None,
+        f"{prefix}median": None,
+        "count": len(values),
+    }
+
+    if values:
+        try:
+            summary_stats[f"{prefix}min"] = min(values)
+            summary_stats[f"{prefix}max"] = max(values)
+            summary_stats[f"{prefix}mean"] = statistics.mean(values)
+            summary_stats[f"{prefix}median"] = statistics.median(values)
+        except statistics.StatisticsError as stat_err:
+            print(
+                f"Warning: Could not calculate statistics: {stat_err}", file=sys.stderr
+            )
+
+    return summary_stats
+
+
+def _rank_and_slice_municipalities(
+    data: list[dict[str, Any]],
+    sort_key: str,
+    sort_order: str,
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Sorts a list of dict items by sort_key (e.g. 'value' or 'delta_value'),
+    slices out top, bottom, and median sub-lists, and returns them.
+    """
+    is_descending: bool = sort_order.lower() == "desc"
+
+    # Sort primarily by the numeric value, tie-break on municipality_id for consistency
+    sorted_data: list[dict[str, Any]] = sorted(
+        data,
+        key=lambda x: (x.get(sort_key, 0.0), x.get("municipality_id", "")),
+        reverse=is_descending,
+    )
+    count_data: int = len(sorted_data)
+    if count_data == 0:
+        return [], [], []
+
+    safe_limit: int = max(1, min(limit, count_data))
+
+    top_municipalities: list[dict[str, Any]] = sorted_data[:safe_limit]
+
+    bottom_municipalities: list[dict[str, Any]] = sorted_data[-safe_limit:]
+    bottom_municipalities.reverse()  # So the 'worst' or smallest is last
+
+    # Approximate median slice
+    median_municipalities: list[dict[str, Any]] = []
+    if count_data > 0:
+        n: int = count_data
+        median_rank_index_lower: int = (n - 1) // 2
+        start_offset: int = safe_limit // 2
+        median_start_index: int = max(0, median_rank_index_lower - start_offset)
+        median_start_index = min(median_start_index, n - safe_limit)
+        median_start_index = max(0, median_start_index)
+        median_end_index: int = median_start_index + safe_limit
+        median_municipalities = sorted_data[median_start_index:median_end_index]
+
+    return top_municipalities, bottom_municipalities, median_municipalities
+
+
+###############################################################################
+# 5) Single-year & Multi-year Data Processing (Unified)
+###############################################################################
+
+
+def _process_kpi_data(
+    municipality_data: dict[str, dict[str, float]],
+    municipality_map: dict[str, KoladaMunicipality],
+    years: list[str],
+    sort_order: str,
+    limit: int,
+    kpi_metadata: dict[str, Any],
+    gender: str,
+    only_return_rate: bool,
+) -> dict[str, Any]:
+    """
+    **Unified Single-Year & Multi-Year Data Processing.**
+
+    If ONLY ONE year is specified (e.g. "2023"):
+      - We effectively rank municipalities by that single year's value
+        (treated as 'latest_value').
+      - No delta_value is computed.
+
+    If MULTIPLE years are specified (e.g., "2020,2021,2022"):
+      - We rank municipalities by the 'latest_value' (i.e., the newest among
+        the requested years that each municipality actually has).
+      - If the municipality has at least two of those years, compute earliest-latest
+        difference (delta_value).
+
+    Shared Behavior:
+      - Always returns top/bottom/median municipalities sorted by 'latest_value'
+        (unless only_return_rate=True, in which case we skip main sorting).
+      - If `only_return_rate=True` for multiple years, we only return the
+        delta-based portion. Single-year plus only_return_rate => no delta list.
+
+    Returns a structured dictionary including:
+      - 'kpi_info': Metadata about the KPI (id, title, description, operating_area)
+      - 'summary_stats': If multiple years and not `only_return_rate`,
+        we store stats for 'latest_value' as min_latest, max_latest, etc.
+        If only one year, effectively the same: min, max, etc. for that single year.
+      - 'delta_municipalities' & 'delta_summary_stats': For multi-year
+        analysis, if there is a delta. If single-year or if a municipality
+        has only one year in the requested set, no delta is computed.
+      - We also return top/bottom/median slices for the delta portion.
+        (top_delta_municipalities, bottom_delta_municipalities, median_delta_municipalities)
+    """
+    sorted_years: list[str] = sorted(years)
+    is_multi_year: bool = len(sorted_years) > 1
+
+    print(
+        f"[Kolada MCP] Unified KPI processing. Requested years: {sorted_years}",
+        file=sys.stderr,
+    )
+    print(
+        f"[Kolada MCP] Processing data for {len(municipality_data)} municipalities.",
+        file=sys.stderr,
+    )
+
+    full_municipality_list: list[dict[str, Any]] = []
+    latest_values_list: list[float] = []
+    delta_list: list[dict[str, Any]] = []
+    delta_values: list[float] = []
+
+    for m_id, yearly_values in municipality_data.items():
+        available_years: list[str] = [y for y in sorted_years if y in yearly_values]
+        if not available_years:
+            continue  # no data in requested set
+
+        earliest_year: str = available_years[0]
+        latest_year: str = available_years[-1]
+        earliest_val: float = yearly_values[earliest_year]
+        latest_val: float = yearly_values[latest_year]
+
+        m_name: str = municipality_map.get(m_id, {}).get("title", f"Kommun {m_id}")
+        entry: dict[str, Any] = {
+            "municipality_id": m_id,
+            "municipality_name": m_name,
+            "latest_year": latest_year,
+            "latest_value": latest_val,
+            "years_in_data": available_years,
+        }
+        full_municipality_list.append(entry)
+        latest_values_list.append(latest_val)
+
+        # Multi-year delta check
+        if len(available_years) >= 2:
+            delta_value: float = latest_val - earliest_val
+            entry["earliest_year"] = earliest_year
+            entry["earliest_value"] = earliest_val
+            entry["delta_value"] = delta_value
+            delta_list.append(entry)
+            delta_values.append(delta_value)
+
+    if not full_municipality_list:
+        return {
+            "error": f"No data available for the specified parameters (Years: {years}, Gender: {gender}).",
+            "kpi_info": kpi_metadata,
+            "selected_gender": gender,
+            "selected_years": years,
+            "municipalities_count": 0,
+            "summary_stats": {},
+            "top_municipalities": [],
+            "bottom_municipalities": [],
+            "median_municipalities": [],
+        }
+
+    # If only_return_rate, skip the main (latest_value) listing and produce delta-based results
+    if only_return_rate:
+        # Slice top/bottom/median for the delta list
+        delta_top, delta_bottom, delta_median = _rank_and_slice_municipalities(
+            delta_list, "delta_value", sort_order, limit
+        )
+        delta_stats: dict[str, float | int | None] = _calculate_summary_stats(
+            delta_values
+        )
+        delta_summary_stats: dict[str, float | int | None] = {
+            "min_delta": delta_stats["min"],
+            "max_delta": delta_stats["max"],
+            "mean_delta": delta_stats["mean"],
+            "median_delta": delta_stats["median"],
+            "count": delta_stats["count"],
+        }
+        return {
+            "kpi_info": kpi_metadata,
+            "summary_stats": delta_summary_stats,
+            "top_municipalities": [],
+            "bottom_municipalities": [],
+            "median_municipalities": [],
+            "municipalities_count": len(delta_list),
+            "selected_gender": gender,
+            "selected_years": years,
+            "sort_order": sort_order,
+            "limit": limit,
+            "multi_year_delta": is_multi_year,
+            "only_return_rate": True,
+            "delta_municipalities": delta_list,
+            "top_delta_municipalities": delta_top,
+            "bottom_delta_municipalities": delta_bottom,
+            "median_delta_municipalities": delta_median,
+        }
+
+    # Otherwise, produce main listing sorted by latest_value, plus any delta-based slices
+    top_main, bottom_main, median_main = _rank_and_slice_municipalities(
+        full_municipality_list, "latest_value", sort_order, limit
+    )
+    main_stats: dict[str, float | int | None] = _calculate_summary_stats(
+        latest_values_list
+    )
+    summary_stats: dict[str, float | int | None] = {
+        "min_latest": main_stats["min"],
+        "max_latest": main_stats["max"],
+        "mean_latest": main_stats["mean"],
+        "median_latest": main_stats["median"],
+        "count": main_stats["count"],
+    }
+
+    # For the delta portion (if multi-year > 1 year)
+    delta_top, delta_bottom, delta_median = _rank_and_slice_municipalities(
+        delta_list, "delta_value", sort_order, limit
+    )
+    delta_stats: dict[str, float | int | None] = _calculate_summary_stats(delta_values)
+    delta_summary_stats: dict[str, float | int | None] = {
+        "min_delta": delta_stats["min"],
+        "max_delta": delta_stats["max"],
+        "mean_delta": delta_stats["mean"],
+        "median_delta": delta_stats["median"],
+        "count": delta_stats["count"],
+    }
+
+    return {
+        "kpi_info": kpi_metadata,
+        "summary_stats": summary_stats,
+        "top_municipalities": top_main,
+        "bottom_municipalities": bottom_main,
+        "median_municipalities": median_main,
+        "municipalities_count": len(full_municipality_list),
+        "selected_gender": gender,
+        "selected_years": years,
+        "sort_order": sort_order,
+        "limit": limit,
+        "multi_year_delta": is_multi_year,
+        "only_return_rate": False,
+        "top_delta_municipalities": delta_top,
+        "bottom_delta_municipalities": delta_bottom,
+        "median_delta_municipalities": delta_median,
+    }
+
+
+###############################################################################
+# 6) Server Lifespan: Fetch & Cache Kolada Metadata + Municipalities
 ###############################################################################
 
 
@@ -198,6 +541,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     Yields the dictionary that becomes ctx.request_context.lifespan_context.
     """
     print("[Kolada MCP Lifespan] Starting lifespan setup...", file=sys.stderr)
+
     kpi_list: list[KoladaKpi] = []
     municipality_list: list[KoladaMunicipality] = []
 
@@ -209,13 +553,13 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
         file=sys.stderr,
     )
     async with httpx.AsyncClient() as client:
-        next_url = f"{BASE_URL}/kpi?per_page={KPI_PER_PAGE}"
+        next_url: str | None = f"{BASE_URL}/kpi?per_page={KPI_PER_PAGE}"
         while next_url:
             print(f"[Kolada MCP] Fetching page: {next_url}", file=sys.stderr)
             try:
                 resp = await client.get(next_url, timeout=180.0)
                 resp.raise_for_status()
-                data = resp.json()
+                data: dict[str, Any] = resp.json()
             except (
                 httpx.RequestError,
                 httpx.HTTPStatusError,
@@ -228,14 +572,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
                 print(f"Failed URL: {next_url}", file=sys.stderr)
                 raise RuntimeError(f"Failed to initialize Kolada KPI cache: {e}") from e
 
-            values: list[KoladaKpi] | None = data.get("values")
-            if isinstance(values, list):
-                kpi_list.extend(values)
+            values: list[KoladaKpi] = data.get("values", [])
+            kpi_list.extend(values)
             next_url = data.get("next_page")
 
     print(
-        f"[Kolada MCP] Fetched {len(kpi_list)} total KPIs from Kolada.",
-        file=sys.stderr,
+        f"[Kolada MCP] Fetched {len(kpi_list)} total KPIs from Kolada.", file=sys.stderr
     )
 
     # ----------------------------------
@@ -243,14 +585,15 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     # ----------------------------------
     print("[Kolada MCP] Fetching municipality data...", file=sys.stderr)
     try:
-        muni_resp = await _fetch_data_from_kolada(f"{BASE_URL}/municipality")
+        muni_resp: dict[str, Any] = await _fetch_data_from_kolada(
+            f"{BASE_URL}/municipality"
+        )
         if "error" in muni_resp:
             raise RuntimeError(
                 f"Failed to initialize municipality cache: {muni_resp['error']}"
             )
-        muni_values = muni_resp.get("values", [])
-        # Each item is { "id": "...", "title": "...", "type": "K" }
-        municipality_list = muni_values
+        muni_values: list[dict[str, Any]] = muni_resp.get("values", [])
+        municipality_list = cast(list[KoladaMunicipality], muni_values)
         print(
             f"[Kolada MCP] Fetched {len(municipality_list)} municipalities/regions.",
             file=sys.stderr,
@@ -265,19 +608,21 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     # Build an ID -> KPI map
     kpi_map: dict[str, KoladaKpi] = {}
     for kpi_obj in kpi_list:
-        k_id = kpi_obj.get("id")
+        k_id: str | None = kpi_obj.get("id")
         if k_id is not None:
-            kpi_map[str(k_id)] = kpi_obj
+            kpi_map[k_id] = kpi_obj
 
     # Build an ID -> municipality map
     municipality_map: dict[str, KoladaMunicipality] = {}
     for m_obj in municipality_list:
-        m_id = m_obj.get("id")
+        m_id: str | None = m_obj.get("id")
         if m_id is not None:
-            municipality_map[str(m_id)] = m_obj
+            municipality_map[m_id] = m_obj
 
     # Generate operating areas summary
-    operating_areas_summary = _get_operating_areas_summary(kpi_list)
+    operating_areas_summary: list[dict[str, str | int]] = _get_operating_areas_summary(
+        kpi_list
+    )
     print(
         f"[Kolada MCP] Identified {len(operating_areas_summary)} unique operating areas.",
         file=sys.stderr,
@@ -318,13 +663,13 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
 
 
 ###############################################################################
-# 5) Instantiate FastMCP
+# 7) Instantiate FastMCP
 ###############################################################################
-mcp = FastMCP("KoladaServer", lifespan=app_lifespan)
+mcp: FastMCP = FastMCP("KoladaServer", lifespan=app_lifespan)
 
 
 ###############################################################################
-# 6) Additional Tools (Unchanged from prior code, but included for completeness)
+# 8) Additional Tools
 ###############################################################################
 
 
@@ -344,11 +689,13 @@ async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:
         ...
     ]
     """
-    lifespan_ctx = _safe_get_lifespan_context(ctx)
+    lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         return [{"error": "Server context structure invalid or incomplete."}]
 
-    summary = lifespan_ctx.get("operating_areas_summary", [])
+    summary: list[dict[str, str | int]] = lifespan_ctx.get(
+        "operating_areas_summary", []
+    )
     if not summary:
         print("Warning: Operating areas summary is empty in context.", file=sys.stderr)
         return []
@@ -376,21 +723,21 @@ async def get_kpis_by_operating_area(
     Returns:
         A list of KoladaKpi objects matching the area, or an empty list.
     """
-    lifespan_ctx = _safe_get_lifespan_context(ctx)
+    lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         return []
 
-    kpi_list = lifespan_ctx.get("kpi_cache", [])
+    kpi_list: list[KoladaKpi] = lifespan_ctx.get("kpi_cache", [])
     if not kpi_list:
         print("Warning: KPI cache is empty in context.", file=sys.stderr)
         return []
 
-    target_area_lower = operating_area.lower().strip()
+    target_area_lower: str = operating_area.lower().strip()
     matches: list[KoladaKpi] = []
 
     for kpi in kpi_list:
-        area_field = kpi.get("operating_area", "").lower()
-        kpi_areas = {a.strip() for a in area_field.split(",")}
+        area_field: str = kpi.get("operating_area", "").lower()
+        kpi_areas: set[str] = {a.strip() for a in area_field.split(",")}
         if target_area_lower in kpi_areas:
             matches.append(kpi)
 
@@ -423,12 +770,12 @@ async def get_kpi_metadata(
     Returns:
         A KoladaKpi object if found, or an error dictionary.
     """
-    lifespan_ctx = _safe_get_lifespan_context(ctx)
+    lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         return {"error": "Server context structure invalid or incomplete."}
 
-    kpi_map = lifespan_ctx.get("kpi_map", {})
-    kpi_obj = kpi_map.get(str(kpi_id))
+    kpi_map: dict[str, KoladaKpi] = lifespan_ctx.get("kpi_map", {})
+    kpi_obj: KoladaKpi | None = kpi_map.get(kpi_id)
 
     if not kpi_obj:
         print(
@@ -459,20 +806,20 @@ async def search_kpis(
     Returns:
         A list of matching KoladaKpi objects (up to the limit).
     """
-    lifespan_ctx = _safe_get_lifespan_context(ctx)
+    lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         return []
 
-    kpi_list = lifespan_ctx.get("kpi_cache", [])
+    kpi_list: list[KoladaKpi] = lifespan_ctx.get("kpi_cache", [])
     if not kpi_list:
         print("Warning: KPI cache is empty, cannot perform search.", file=sys.stderr)
         return []
 
-    kw_lower = keyword.lower()
+    kw_lower: str = keyword.lower()
     matches: list[KoladaKpi] = []
     for kpi_obj in kpi_list:
-        title = kpi_obj.get("title", "").lower()
-        desc = kpi_obj.get("description", "").lower()
+        title: str = kpi_obj.get("title", "").lower()
+        desc: str = kpi_obj.get("description", "").lower()
         if kw_lower in title or kw_lower in desc:
             matches.append(kpi_obj)
             if len(matches) >= limit:
@@ -491,6 +838,7 @@ async def fetch_kolada_data(
     municipality_id: str,
     ctx: Context,
     year: str | None = None,
+    municipality_type: str = "K",
 ) -> dict[str, Any]:
     """
     Fetches the *actual statistical data values* for a specific Kolada KPI
@@ -501,8 +849,12 @@ async def fetch_kolada_data(
 
     Args:
         kpi_id: The unique ID of the Kolada KPI.
-        municipality_id: The official ID of the Swedish municipality (see Kolada docs or `/v2/municipality` endpoint).
-        year: Optional. A specific year (e.g., "2023") or a comma-separated list/range (e.g., "2020,2021,2022"). If None, fetches all available years.
+        municipality_id: The official ID of the Swedish municipality.
+        year: Optional. A specific year (e.g., "2023") or a comma-separated list/range
+              (e.g., "2020,2021,2022"). If None, fetches all available years.
+        municipality_type: (Default = "K"). Filter so that results only come from municipalities
+              of this type ("K", "R", or "L"). If the requested municipality does not match
+              this type, an error is returned.
         ctx: The server context (injected automatically, currently unused but available).
 
     Returns:
@@ -511,28 +863,36 @@ async def fetch_kolada_data(
         if the API call fails. Additionally, a 'municipality_name' is attached to each item
         in 'values' if possible, based on the cached municipality map.
     """
-    if not kpi_id or not municipality_id:
-        return {"error": "kpi_id and municipality_id are required."}
-
-    lifespan_ctx = _safe_get_lifespan_context(ctx)
+    lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         return {"error": "Server context structure invalid or incomplete."}
 
-    municipality_map = lifespan_ctx["municipality_map"]
+    if not kpi_id or not municipality_id:
+        return {"error": "kpi_id and municipality_id are required."}
 
-    url = f"{BASE_URL}/data/kpi/{kpi_id}/municipality/{municipality_id}"
-    params: dict[str, str] = {}
-    if year:
-        params["year"] = year
+    municipality_map: dict[str, KoladaMunicipality] = lifespan_ctx["municipality_map"]
 
-    resp_data = await _fetch_data_from_kolada(url, params)
+    if municipality_id not in municipality_map:
+        return {"error": f"Municipality ID '{municipality_id}' not found in system."}
+
+    # Check the type
+    actual_type: str | None = municipality_map[municipality_id].get("type", None)
+    if actual_type != municipality_type:
+        return {
+            "error": f"Municipality '{municipality_id}' is type '{actual_type}', "
+            f"but user requested type '{municipality_type}'."
+        }
+
+    url: str = f"{BASE_URL}/data/kpi/{kpi_id}/municipality/{municipality_id}"
+
+    resp_data: dict[str, Any] = await _fetch_data_from_kolada(url)
     if "error" in resp_data:
         return resp_data  # pass along the error structure
 
     # Attach municipality_name to each top-level item in resp_data['values']
-    values_list = resp_data.get("values", [])
+    values_list: list[dict[str, Any]] = resp_data.get("values", [])
     for item in values_list:
-        m_id = item.get("municipality")
+        m_id: str = item.get("municipality", "Unknown")
         if m_id in municipality_map:
             item["municipality_name"] = municipality_map[m_id].get(
                 "title", f"Kommun {m_id}"
@@ -541,302 +901,6 @@ async def fetch_kolada_data(
             item["municipality_name"] = f"Kommun {m_id}"
 
     return resp_data
-
-
-###############################################################################
-# 7) Refactored analyze_kpi_across_municipalities for Multi-Year Deltas
-###############################################################################
-
-
-def _parse_years_param(year_str: str) -> list[str]:
-    """
-    Parses a comma-separated string of years into a list (e.g. "2020,2021" -> ["2020","2021"]).
-    If empty or invalid, returns an empty list.
-    """
-    if not year_str:
-        return []
-    parts = [y.strip() for y in year_str.split(",") if y.strip()]
-    return parts
-
-
-def _fetch_and_group_data_by_municipality(
-    data: dict[str, Any],
-    gender: str,
-) -> dict[str, dict[str, float]]:
-    """
-    From a Kolada data response containing multiple years, extracts numeric values
-    per (municipality, year) for the specified gender. Returns a structure:
-    {
-      "0180": { "2020": 123.0, "2021": 130.5 },
-      "1860": { "2020": 90.0,  "2021": 95.0 },
-      ...
-    }
-    Skips any entries where 'municipality' or 'period' is missing, or the value is invalid.
-    """
-    municipality_data: dict[str, dict[str, float]] = {}
-    values_data = data.get("values", [])
-    for item in values_data:
-        municipality_id = item.get("municipality")
-        period = item.get("period")
-        if not municipality_id or not period:
-            print(
-                f"Warning: Skipping due to missing municipality_id or period: {item}",
-                file=sys.stderr,
-            )
-            continue
-
-        for value_item in item.get("values", []):
-            if value_item.get("gender") == gender:
-                val = value_item.get("value")
-                if val is not None:
-                    try:
-                        numeric_value = float(val)
-                        municipality_data.setdefault(municipality_id, {})[
-                            period
-                        ] = numeric_value
-                    except (ValueError, TypeError):
-                        print(
-                            f"Warning: Could not convert '{val}' to float for municipality {municipality_id}, period {period}, gender {gender}.",
-                            file=sys.stderr,
-                        )
-    return municipality_data
-
-
-def _process_single_year_data(
-    municipality_data: dict[str, dict[str, float]],
-    municipality_map: dict[str, KoladaMunicipality],
-    year: str,
-    sort_order: str,
-    limit: int,
-    kpi_metadata: dict[str, Any],
-    gender: str,
-) -> dict[str, Any]:
-    """
-    Handles the original single-year case:
-    - Sorts data by the value
-    - Returns top/bottom/median sets and summary stats
-    """
-    processed_data: list[dict[str, Any]] = []
-    all_values: list[float] = []
-
-    for m_id, yearly_dict in municipality_data.items():
-        if year in yearly_dict:
-            numeric_value = yearly_dict[year]
-            m_name = municipality_map.get(m_id, {}).get("title", f"Kommun {m_id}")
-            processed_data.append(
-                {
-                    "municipality_id": m_id,
-                    "municipality_name": m_name,
-                    "year": year,
-                    "value": numeric_value,
-                }
-            )
-            all_values.append(numeric_value)
-
-    if not processed_data:
-        return {
-            "error": f"No data available for the specified parameters (Year: {year}, Gender: {gender}).",
-            "kpi_info": kpi_metadata,
-            "selected_gender": gender,
-            "selected_year": year,
-            "municipalities_count": 0,
-            "summary_stats": {},
-            "top_municipalities": [],
-            "bottom_municipalities": [],
-            "median_municipalities": [],
-        }
-
-    is_descending = sort_order.lower() == "desc"
-    sorted_data = sorted(
-        processed_data,
-        key=lambda x: (x["value"], x["municipality_id"]),
-        reverse=is_descending,
-    )
-    municipalities_count = len(sorted_data)
-
-    summary_stats: dict[str, float | int | None] = {
-        "min": None,
-        "max": None,
-        "mean": None,
-        "median": None,
-        "count": municipalities_count,
-    }
-
-    if all_values:
-        try:
-            summary_stats["median"] = statistics.median(all_values)
-            summary_stats["mean"] = statistics.mean(all_values)
-            summary_stats["min"] = min(all_values)
-            summary_stats["max"] = max(all_values)
-        except statistics.StatisticsError as stat_err:
-            print(
-                f"Warning: Could not calculate statistics: {stat_err}", file=sys.stderr
-            )
-
-    safe_limit = (
-        max(1, min(limit, municipalities_count)) if municipalities_count > 0 else 0
-    )
-    top_municipalities = sorted_data[:safe_limit]
-    bottom_municipalities = sorted_data[-safe_limit:]
-    bottom_municipalities.reverse()
-
-    median_municipalities: list[dict[str, Any]] = []
-    if municipalities_count > 0:
-        n = municipalities_count
-        median_rank_index_lower = (n - 1) // 2
-        start_offset = safe_limit // 2
-        median_start_index = max(0, median_rank_index_lower - start_offset)
-        median_start_index = min(median_start_index, n - safe_limit)
-        median_start_index = max(0, median_start_index)
-        median_end_index = median_start_index + safe_limit
-        median_municipalities = sorted_data[median_start_index:median_end_index]
-
-    return {
-        "kpi_info": kpi_metadata,
-        "summary_stats": summary_stats,
-        "top_municipalities": top_municipalities,
-        "bottom_municipalities": bottom_municipalities,
-        "median_municipalities": median_municipalities,
-        "municipalities_count": municipalities_count,
-        "selected_gender": gender,
-        "selected_year": year,
-        "sort_order": sort_order,
-        "limit": limit,
-    }
-
-
-def _process_multi_year_data(
-    municipality_data: dict[str, dict[str, float]],
-    municipality_map: dict[str, KoladaMunicipality],
-    years: list[str],
-    sort_order: str,
-    limit: int,
-    kpi_metadata: dict[str, Any],
-    gender: str,
-    only_return_rate: bool,
-) -> dict[str, Any]:
-    """
-    Handles multi-year logic:
-    - For each municipality, compute earliest-latest difference
-    - Sort/rank by the delta value
-    - Return top/bottom/median sets for the change over the period
-    """
-    sorted_years = sorted(years)  # e.g., ["2020", "2021", "2022"]
-    first_year, last_year = sorted_years[0], sorted_years[-1]
-
-    processed_data: list[dict[str, Any]] = []
-    all_deltas: list[float] = []
-
-    for m_id, yearly_values in municipality_data.items():
-        if first_year in yearly_values and last_year in yearly_values:
-            earliest_val = yearly_values[first_year]
-            latest_val = yearly_values[last_year]
-            delta_value = latest_val - earliest_val
-            m_name = municipality_map.get(m_id, {}).get("title", f"Kommun {m_id}")
-            entry: dict[str, Any] = {
-                "municipality_id": m_id,
-                "municipality_name": m_name,
-                "earliest_year": first_year,
-                "latest_year": last_year,
-                "earliest_value": earliest_val,
-                "latest_value": latest_val,
-                "delta_value": delta_value,
-            }
-            processed_data.append(entry)
-            all_deltas.append(delta_value)
-
-    if not processed_data:
-        return {
-            "error": f"No data found for multi-year analysis across {years} and gender={gender}. Possibly data is missing for earliest or latest year in each municipality.",
-            "kpi_info": kpi_metadata,
-            "selected_gender": gender,
-            "selected_years": years,
-            "municipalities_count": 0,
-            "summary_stats": {},
-            "top_municipalities": [],
-            "bottom_municipalities": [],
-            "median_municipalities": [],
-        }
-
-    # Sort by delta_value
-    is_descending = sort_order.lower() == "desc"
-    sorted_by_delta = sorted(
-        processed_data,
-        key=lambda x: (x["delta_value"], x["municipality_id"]),
-        reverse=is_descending,
-    )
-    municipalities_count = len(sorted_by_delta)
-
-    summary_stats: dict[str, float | int | None] = {
-        "min_delta": None,
-        "max_delta": None,
-        "mean_delta": None,
-        "median_delta": None,
-        "count": municipalities_count,
-    }
-
-    if all_deltas:
-        try:
-            summary_stats["median_delta"] = statistics.median(all_deltas)
-            summary_stats["mean_delta"] = statistics.mean(all_deltas)
-            summary_stats["min_delta"] = min(all_deltas)
-            summary_stats["max_delta"] = max(all_deltas)
-        except statistics.StatisticsError as stat_err:
-            print(
-                f"Warning: Could not calculate statistics for multi-year: {stat_err}",
-                file=sys.stderr,
-            )
-
-    safe_limit = (
-        max(1, min(limit, municipalities_count)) if municipalities_count > 0 else 0
-    )
-    top_municipalities = sorted_by_delta[:safe_limit]
-    bottom_municipalities = sorted_by_delta[-safe_limit:]
-    bottom_municipalities.reverse()
-
-    median_municipalities: list[dict[str, Any]] = []
-    if municipalities_count > 0:
-        n = municipalities_count
-        median_rank_index_lower = (n - 1) // 2
-        start_offset = safe_limit // 2
-        median_start_index = max(0, median_rank_index_lower - start_offset)
-        median_start_index = min(median_start_index, n - safe_limit)
-        median_start_index = max(0, median_start_index)
-        median_end_index = median_start_index + safe_limit
-        median_municipalities = sorted_by_delta[median_start_index:median_end_index]
-
-    # If only_return_rate is True, we do not return single-year stats, just the delta
-    if only_return_rate:
-        return {
-            "kpi_info": kpi_metadata,
-            "summary_stats": summary_stats,
-            "top_municipalities": top_municipalities,
-            "bottom_municipalities": bottom_municipalities,
-            "median_municipalities": median_municipalities,
-            "municipalities_count": municipalities_count,
-            "selected_gender": gender,
-            "selected_years": years,
-            "sort_order": sort_order,
-            "limit": limit,
-            "multi_year_delta": True,
-            "only_return_rate": True,
-        }
-
-    # Otherwise return both the delta-based ranking + flags
-    return {
-        "kpi_info": kpi_metadata,
-        "summary_stats": summary_stats,
-        "top_municipalities": top_municipalities,
-        "bottom_municipalities": bottom_municipalities,
-        "median_municipalities": median_municipalities,
-        "municipalities_count": municipalities_count,
-        "selected_gender": gender,
-        "selected_years": years,
-        "sort_order": sort_order,
-        "limit": limit,
-        "multi_year_delta": True,
-        "only_return_rate": False,
-    }
 
 
 @mcp.tool()
@@ -848,120 +912,459 @@ async def analyze_kpi_across_municipalities(
     limit: int = 10,
     gender: str = "T",
     only_return_rate: bool = False,
+    municipality_type: str = "K",
 ) -> dict[str, Any]:
     """
-    Analyserar ett KPI över alla kommuner och returnerar strukturerad data.
-    Nu uppdaterat för att stödja flera år i ett enda anrop:
+    Analyzes a KPI across all municipalities and returns structured data.
+    Now updated to a unified approach for single-year & multi-year:
 
-    1. Om enbart ETT år anges (t.ex. "2023"):
-       - Hämtar data för detta år och returnerar samma statistik som tidigare
-         (topp-, botten-, mediankommuner efter värdet).
+    1. If ONLY ONE year is specified (e.g., "2023"):
+       - Retrieves data for that year and ranks municipalities by that single year.
+         (No delta_value is computed.)
+    2. If MULTIPLE years are specified (comma-separated, e.g., "2020,2021,2022"):
+       - Retrieves data for all those years.
+       - Calculates the change (delta_value) from the earliest to the latest year
+         (among those actually available for each municipality).
+       - Always sorts the final listing by 'latest_value'.
+       - If a municipality has only one year of data in that range, it has no delta.
 
-    2. Om FLERA år anges (kommaseparerade, t.ex. "2020,2021,2022"):
-       - Hämtar data för alla dessa år.
-       - Beräknar förändring (delta_value) från det tidigaste året till det senaste,
-         och returnerar topp-, botten- och medianlistor baserade på förändringen (dvs. delta_value).
-       - Om parametern `only_return_rate=True`, returneras endast denna delta-baserade
-         ranking och statistik, ej grunddata för enskilda år.
+    If `only_return_rate=True` and multiple years are specified, we only return the
+    delta-based subset (omitting the top/bottom/median that are normally sorted by 'latest_value').
 
     Args:
-        kpi_id: Det unika ID:t för KPI:n (t.ex. "N00530" för nöjdhet med förskola).
-        year: Valfritt. Exempel:
-            - "2023" för ett enskilt år,
-            - "2020,2021,2022" för flera år.
-            Om inget anges hämtas alla tillgängliga år (ej fullt implementerat här).
-        sort_order: "asc" för stigande ordning, "desc" för fallande ordning (standard).
-        limit: Antal kommuner att inkludera i topp-, botten- och medianlistorna (standard 10).
-        gender: Kön att filtrera på ("K" för kvinnor, "M" för män, "T" för totalt).
-        only_return_rate: Om True och flera år anges, returneras endast förändringsdata
-            (top, bottom, median efter delta_value).
-        ctx: Serverkontexten (injiceras automatiskt).
+        kpi_id: The unique ID of the KPI (e.g., "N00530" for preschool satisfaction).
+        year: Optional. Examples:
+            - "2023" for a single year,
+            - "2020,2021,2022" for multiple years.
+            If not provided, all available years will be fetched
+            (not fully implemented here).
+        sort_order: "asc" for ascending, "desc" for descending order (default).
+        limit: Number of municipalities to include in the top, bottom, and median lists (default 10).
+        gender: Gender to filter by ("K", "M", or "T" for total).
+        only_return_rate: If True and multiple years are specified, only
+          the delta-based subset is returned (municipalities_count, summary_stats, etc.)
+        municipality_type: (Default = "K"). Filter so that only municipalities of this
+          type ("K", "R", or "L") appear in the final results.
 
     Returns:
-        Ett strukturerat dictionary med exempelvis:
-        - 'kpi_info': Metadata om KPI:n (id, title, description, operating_area)
-        - 'summary_stats': Statistiska mått
-          (single-year: min, max, median, mean)
-          (multi-year: min_delta, max_delta, median_delta, mean_delta)
-        - 'top_municipalities': Topp-kommuner efter (value eller delta_value)
-        - 'bottom_municipalities': Botten-kommuner (value/delta)
-        - 'median_municipalities': Kommuner runt medianvärdet
-        - 'municipalities_count': Antalet kommuner med data
-        - 'selected_gender': "K", "M" eller "T"
-        - 'selected_year': Om enskilt år
-        - 'selected_years': Om flera år
-        - 'multi_year_delta': Boolean, True när det är multi-year-analys
-        - 'only_return_rate': Återspeglar funktionen om enbart delta ska returneras
-        - 'error': Eventuellt felmeddelande
+        A structured dictionary with for example:
+         - 'kpi_info': KPI metadata
+         - 'summary_stats': Stats for the single-year or "latest_value"
+           if multi-year (unless only_return_rate=True)
+         - 'delta_municipalities': The subset that actually had 2+ years
+           (multi-year)
+         - 'delta_summary_stats': Stats for that subset
+         - 'top_municipalities', 'bottom_municipalities', 'median_municipalities':
+           Lists sorted by "latest_value", unless only_return_rate is True
+         - 'top_delta_municipalities', 'bottom_delta_municipalities',
+           'median_delta_municipalities': The slices for delta-based sorting
+         - 'municipalities_count': # of municipalities with at least one data point
+         - 'selected_years': The requested years
+         - 'multi_year_delta': Boolean, True if multiple years
+         - 'only_return_rate': Reflects if only delta is returned
+         - 'error': If any
     """
-    # Step 1: Fetch KPI metadata
-    kpi_metadata_result = await get_kpi_metadata(kpi_id, ctx)
-    if isinstance(kpi_metadata_result, dict) and "error" in kpi_metadata_result:
-        return {
-            "error": f"Failed to retrieve KPI metadata: {kpi_metadata_result['error']}",
-            "kpi_id": kpi_id,
-        }
 
-    kpi_metadata = {
+    # Step 1: Fetch KPI metadata
+    kpi_metadata_result: KoladaKpi | dict[str, str] = await get_kpi_metadata(
+        kpi_id, ctx
+    )
+    kpi_metadata: dict[str, Any] = {
         "id": kpi_id,
         "title": kpi_metadata_result.get("title", ""),
         "description": kpi_metadata_result.get("description", ""),
         "operating_area": kpi_metadata_result.get("operating_area", ""),
     }
 
+    print(
+        f"[Kolada MCP] Analyzing KPI {kpi_id} ({kpi_metadata['title']}) across municipalities.",
+        file=sys.stderr,
+    )
+
     # Step 2: Validate context & parse years
-    lifespan_ctx = _safe_get_lifespan_context(ctx)
+    lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         return {
             "error": "Server context structure invalid or incomplete.",
             "kpi_info": kpi_metadata,
         }
-    municipality_map = lifespan_ctx["municipality_map"]
 
-    year_list = _parse_years_param(year)
+    municipality_map: dict[str, KoladaMunicipality] = lifespan_ctx["municipality_map"]
+    year_list: list[str] = _parse_years_param(year)
 
     # Step 3: Fetch Kolada data for the specified year(s)
-    url = (
+    url: str = (
         f"{BASE_URL}/data/kpi/{kpi_id}/year/{year}"
         if year
         else f"{BASE_URL}/data/kpi/{kpi_id}"
     )
-    kolada_data = await _fetch_data_from_kolada(url)
+    kolada_data: dict[str, Any] = await _fetch_data_from_kolada(url)
     if "error" in kolada_data:
         return {"error": kolada_data["error"], "kpi_info": kpi_metadata}
 
-    # Step 4: Convert to municipality_data { m_id: {year: value} }
-    municipality_data = _fetch_and_group_data_by_municipality(kolada_data, gender)
+    print(
+        f"[Kolada MCP] Fetched data for {len(kolada_data.get('values', []))} entries.",
+        file=sys.stderr,
+    )
+    print(
+        f"[Kolada MCP] Sample data: {list(kolada_data.get('values', [])[:5])}",
+        file=sys.stderr,
+    )
 
-    # Step 5: Single-year vs Multi-year logic
-    if len(year_list) <= 1:
-        # Single-year scenario
-        single_year = year_list[0] if year_list else (year or "Unknown")
-        return _process_single_year_data(
-            municipality_data=municipality_data,
-            municipality_map=municipality_map,
-            year=single_year,
-            sort_order=sort_order,
-            limit=limit,
-            kpi_metadata=kpi_metadata,
-            gender=gender,
+    # Step 4: Convert to municipality_data { m_id: {year: value} }
+    municipality_data: dict[str, dict[str, float]] = (
+        _fetch_and_group_data_by_municipality(kolada_data, gender)
+    )
+
+    print(
+        f"[Kolada MCP] Fetched data for {len(municipality_data)} municipalities.",
+        file=sys.stderr,
+    )
+    print(
+        f"[Kolada MCP] Sample data: {list(municipality_data.items())[:5]}",
+        file=sys.stderr,
+    )
+
+    # FILTER by municipality_type (K, R, L). We'll drop any municipality that doesn't match.
+    filtered_municipality_data: dict[str, dict[str, float]] = {}
+    for m_id, yearly_vals in municipality_data.items():
+        # Check if the municipality type matches
+        if m_id in municipality_map:
+            actual_type: str = municipality_map[m_id].get("type", "")
+            if actual_type == municipality_type:
+                filtered_municipality_data[m_id] = yearly_vals
+
+    municipality_data = filtered_municipality_data
+
+    # Step 5: Single function for either single-year or multi-year logic
+    return _process_kpi_data(
+        municipality_data=municipality_data,
+        municipality_map=municipality_map,
+        years=year_list,
+        sort_order=sort_order,
+        limit=limit,
+        kpi_metadata=kpi_metadata,
+        gender=gender,
+        only_return_rate=only_return_rate,
+    )
+
+
+@mcp.tool()
+async def compare_kpis(
+    kpi1_id: str,
+    kpi2_id: str,
+    year: str,
+    ctx: Context,
+    gender: str = "T",
+    municipality_type: str = "K",
+) -> dict[str, Any]:
+    """
+    Compare two Kolada KPIs across municipalities and compute correlations.
+
+    This tool fetches data for two different Kolada KPIs across all municipalities
+    (or regions/landsting) for the specified year(s) and measures their relationship.
+
+    The behavior differs depending on the number of years specified:
+      - **Single year (e.g., "2023")**:
+        1. Perform a cross-sectional correlation across municipalities (one data point per municipality).
+        2. Return a single `overall_correlation` value.
+        3. Also compute `(kpi2 - kpi1)` for each municipality, returning top/bottom/median differences.
+
+      - **Multiple years (e.g., "2020,2021,2022")**:
+        1. Compute a time-series correlation **per municipality** (if at least two overlapping data points exist).
+        2. Build an overall dataset of all municipality-year pairs to get a global `overall_correlation`.
+        3. Rank municipalities by their individual time-series correlation (top/bottom/median).
+
+    Args:
+        kpi1_id: The ID of the first KPI.
+        kpi2_id: The ID of the second KPI.
+        year: A comma-separated list of years or a single year.
+        ctx: The server context, which provides logging and lifespan data.
+        gender: "K" (female), "M" (male), or "T" (total). Defaults to "T".
+        municipality_type: The municipality type. "K" for kommun, "R" for region, or "L" for landsting.
+            Defaults to "K".
+
+    Returns:
+        A dictionary containing:
+          - "kpi1_info", "kpi2_info": Basic metadata for each KPI.
+          - "selected_years": List of parsed year(s).
+          - "multi_year": Boolean indicating single-year vs multi-year analysis.
+          - "overall_correlation": The global correlation value (float or None).
+          - "municipality_correlations": (Multi-year) Correlation results per municipality.
+          - "top_correlation_municipalities", "bottom_correlation_municipalities", "median_correlation_municipalities":
+              Ranked municipalities for multi-year.
+          - "municipality_differences": (Single-year) List of (kpi1_value, kpi2_value, difference) per municipality.
+          - "top_difference_municipalities", "bottom_difference_municipalities", "median_difference_municipalities":
+              Ranked by (kpi2 - kpi1) for single-year.
+          - "error": Error string, if any issues arise.
+    """
+    # ------------------------------------------------------------------------
+    # 1) Retrieve KPI metadata for both KPIs.
+    # ------------------------------------------------------------------------
+    kpi1_meta: KoladaKpi | dict[str, str] = await get_kpi_metadata(kpi1_id, ctx)
+
+    kpi1_info: dict[str, str] = {
+        "id": kpi1_id,
+        "title": kpi1_meta.get("title", ""),
+        "description": kpi1_meta.get("description", ""),
+        "operating_area": kpi1_meta.get("operating_area", ""),
+    }
+
+    kpi2_meta: KoladaKpi | dict[str, str] = await get_kpi_metadata(kpi2_id, ctx)
+
+    kpi2_info: dict[str, str] = {
+        "id": kpi2_id,
+        "title": kpi2_meta.get("title", ""),
+        "description": kpi2_meta.get("description", ""),
+        "operating_area": kpi2_meta.get("operating_area", ""),
+    }
+
+    # ------------------------------------------------------------------------
+    # 2) Parse the requested year(s) and access the lifespan context.
+    # ------------------------------------------------------------------------
+    year_list = _parse_years_param(year)
+    is_multi_year = len(year_list) > 1
+
+    lifespan_ctx = _safe_get_lifespan_context(ctx)
+    if not lifespan_ctx:
+        await ctx.error(
+            "compare_kpis: Server context invalid or missing lifespan context."
         )
+        return {
+            "error": "Server context invalid.",
+            "kpi1_info": kpi1_info,
+            "kpi2_info": kpi2_info,
+        }
+
+    municipality_map = lifespan_ctx["municipality_map"]
+
+    # ------------------------------------------------------------------------
+    # 3) Fetch data for the first KPI across the specified year(s).
+    # ------------------------------------------------------------------------
+    if year:
+        url1 = f"{BASE_URL}/data/kpi/{kpi1_id}/year/{year}"
     else:
-        # Multi-year scenario
-        return _process_multi_year_data(
-            municipality_data=municipality_data,
-            municipality_map=municipality_map,
-            years=year_list,
-            sort_order=sort_order,
-            limit=limit,
-            kpi_metadata=kpi_metadata,
-            gender=gender,
-            only_return_rate=only_return_rate,
+        url1 = f"{BASE_URL}/data/kpi/{kpi1_id}"
+
+    data_kpi1 = await _fetch_data_from_kolada(url1)
+    if "error" in data_kpi1:
+        await ctx.error(
+            f"compare_kpis: Error fetching data for KPI1 '{kpi1_id}' at '{url1}': {data_kpi1['error']}"
         )
+        return {
+            "error": data_kpi1["error"],
+            "kpi1_info": kpi1_info,
+            "kpi2_info": kpi2_info,
+        }
+
+    municipality_data1 = _fetch_and_group_data_by_municipality(data_kpi1, gender)
+
+    # ------------------------------------------------------------------------
+    # 4) Fetch data for the second KPI across the specified year(s).
+    # ------------------------------------------------------------------------
+    if year:
+        url2 = f"{BASE_URL}/data/kpi/{kpi2_id}/year/{year}"
+    else:
+        url2 = f"{BASE_URL}/data/kpi/{kpi2_id}"
+
+    data_kpi2 = await _fetch_data_from_kolada(url2)
+    if "error" in data_kpi2:
+        await ctx.error(
+            f"compare_kpis: Error fetching data for KPI2 '{kpi2_id}' at '{url2}': {data_kpi2['error']}"
+        )
+        return {
+            "error": data_kpi2["error"],
+            "kpi1_info": kpi1_info,
+            "kpi2_info": kpi2_info,
+        }
+
+    municipality_data2 = _fetch_and_group_data_by_municipality(data_kpi2, gender)
+
+    # ------------------------------------------------------------------------
+    # 5) Filter out municipalities that don't match the requested type (K, R, L).
+    # ------------------------------------------------------------------------
+    def filter_muni_type(
+        data_dict: dict[str, dict[str, float]],
+    ) -> dict[str, dict[str, float]]:
+        result_dict: dict[str, dict[str, float]] = {}
+        for m_id, year_values in data_dict.items():
+            muni_obj = municipality_map.get(m_id)
+            if muni_obj and muni_obj.get("type") == municipality_type:
+                result_dict[m_id] = year_values
+        return result_dict
+
+    municipality_data1 = filter_muni_type(municipality_data1)
+    municipality_data2 = filter_muni_type(municipality_data2)
+
+    # ------------------------------------------------------------------------
+    # 6) Prepare result structure and define helper functions.
+    # ------------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "kpi1_info": kpi1_info,
+        "kpi2_info": kpi2_info,
+        "selected_years": year_list,
+        "gender": gender,
+        "municipality_type": municipality_type,
+        "multi_year": is_multi_year,
+    }
+
+    async def compute_pearson_correlation(
+        x_vals: list[float], y_vals: list[float]
+    ) -> float | None:
+        """Compute Pearson correlation using Python's statistics.correlation."""
+        if len(x_vals) < 2 or len(y_vals) < 2:
+            return None
+        try:
+            return statistics.correlation(x_vals, y_vals)
+        except (ValueError, statistics.StatisticsError) as exc:
+            await ctx.warning(f"Failed to compute correlation: {exc}")
+            return None
+
+    # ------------------------------------------------------------------------
+    # 6A) Single-year approach: Cross-sectional correlation.
+    # ------------------------------------------------------------------------
+    if not is_multi_year:
+        if not year_list:
+            await ctx.warning("compare_kpis: No valid single year specified.")
+            return {
+                **result,
+                "error": "No valid year specified for single-year analysis.",
+            }
+
+        single_year = year_list[0]
+        x_vals: list[float] = []
+        y_vals: list[float] = []
+        cross_section_data: list[dict[str, Any]] = []
+
+        # Build cross-sectional dataset
+        for m_id, values_1 in municipality_data1.items():
+            values_2 = municipality_data2.get(m_id)
+            if not values_2:
+                continue
+
+            if single_year in values_1 and single_year in values_2:
+                k1_val = values_1[single_year]
+                k2_val = values_2[single_year]
+                x_vals.append(k1_val)
+                y_vals.append(k2_val)
+
+                cross_section_data.append(
+                    {
+                        "municipality_id": m_id,
+                        "municipality_name": municipality_map.get(m_id, {}).get(
+                            "title", f"Municipality {m_id}"
+                        ),
+                        "kpi1_value": k1_val,
+                        "kpi2_value": k2_val,
+                        "difference": k2_val - k1_val,
+                    }
+                )
+
+        if not cross_section_data:
+            await ctx.warning(
+                f"compare_kpis: No overlapping data found for year {single_year}."
+            )
+            return {
+                **result,
+                "error": f"No overlapping data for single year {single_year}.",
+            }
+
+        # Overall correlation
+        overall_corr = compute_pearson_correlation(x_vals, y_vals)
+        result["overall_correlation"] = overall_corr
+
+        # Sort by difference (kpi2 - kpi1)
+        cross_section_data.sort(key=lambda item: item["difference"])
+        n_muni = len(cross_section_data)
+        limit = min(10, n_muni)
+        median_start = max(0, (n_muni - 1) // 2 - (limit // 2))
+        median_end = min(median_start + limit, n_muni)
+
+        result["municipality_differences"] = cross_section_data
+        result["top_difference_municipalities"] = list(
+            reversed(cross_section_data[-limit:])
+        )
+        result["bottom_difference_municipalities"] = cross_section_data[:limit]
+        result["median_difference_municipalities"] = cross_section_data[
+            median_start:median_end
+        ]
+
+        return result
+
+    # ------------------------------------------------------------------------
+    # 6B) Multi-year approach: Time-series correlation per municipality and overall.
+    # ------------------------------------------------------------------------
+    big_x: list[float] = []
+    big_y: list[float] = []
+    municipality_correlations: list[dict[str, Any]] = []
+
+    # For each municipality, gather overlapping year data
+    for m_id, values_1 in municipality_data1.items():
+        values_2 = municipality_data2.get(m_id)
+        if not values_2:
+            continue
+
+        # Intersection of years for which both KPI1 and KPI2 exist
+        intersection_years = sorted(set(values_1.keys()) & set(values_2.keys()))
+        if not intersection_years:
+            continue
+
+        ts_x: list[float] = []
+        ts_y: list[float] = []
+        for y in intersection_years:
+            ts_x.append(values_1[y])
+            ts_y.append(values_2[y])
+            big_x.append(values_1[y])
+            big_y.append(values_2[y])
+
+        # Per-municipality correlation if at least 2 data points
+        muni_corr = compute_pearson_correlation(ts_x, ts_y)
+        if muni_corr is not None:
+            municipality_correlations.append(
+                {
+                    "municipality_id": m_id,
+                    "municipality_name": municipality_map.get(m_id, {}).get(
+                        "title", f"Municipality {m_id}"
+                    ),
+                    "correlation": muni_corr,
+                    "years_used": intersection_years,
+                    "n_years": len(intersection_years),
+                }
+            )
+
+    overall_corr = compute_pearson_correlation(big_x, big_y)
+    result["overall_correlation"] = overall_corr
+
+    # Sort municipalities by correlation in ascending order
+    municipality_correlations.sort(key=lambda item: item["correlation"])
+    n_corr = len(municipality_correlations)
+    if n_corr == 0:
+        await ctx.warning(
+            "compare_kpis: No municipality had at least 2 overlapping years for both KPIs."
+        )
+        return {
+            **result,
+            "error": "No municipality had 2+ overlapping data points to compute correlation.",
+        }
+
+    limit = min(10, n_corr)
+    median_start = max(0, (n_corr - 1) // 2 - (limit // 2))
+    median_end = min(median_start + limit, n_corr)
+
+    result["municipality_correlations"] = municipality_correlations
+    result["top_correlation_municipalities"] = list(
+        reversed(municipality_correlations[-limit:])
+    )
+    result["bottom_correlation_municipalities"] = municipality_correlations[:limit]
+    result["median_correlation_municipalities"] = municipality_correlations[
+        median_start:median_end
+    ]
+
+    return result
 
 
 ###############################################################################
-# 8) Prompt
+# 9) Prompt
 ###############################################################################
 
 
@@ -1001,7 +1404,7 @@ def kolada_entry_point() -> str:
 
 
 ###############################################################################
-# 9) Main entry
+# 10) Main entry
 ###############################################################################
 
 if __name__ == "__main__":
