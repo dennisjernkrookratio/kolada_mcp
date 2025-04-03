@@ -271,7 +271,8 @@ async def analyze_kpi_across_municipalities(
     for m_id, yearly_vals in municipality_data.items():
         if m_id in municipality_map:
             actual_type: str = municipality_map[m_id].get("type", "")
-            if actual_type == municipality_type:
+            # If municipality_type is provided, filter by it; otherwise, include all types.
+            if not municipality_type or actual_type == municipality_type:
                 filtered_municipality_data[m_id] = yearly_vals
 
     # If user specified municipality_ids, skip ranking and return flat list
