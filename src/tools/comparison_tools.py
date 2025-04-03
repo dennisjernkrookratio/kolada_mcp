@@ -21,12 +21,16 @@ async def compare_kpis(
     ctx: Context,  # type: ignore[Context]
     gender: str = "T",
     municipality_type: str = "K",
+    municipality_ids: str | None = None,
 ) -> dict[str, Any]:
     """
     **Purpose:** Compares two different Kolada Key Performance Indicators (KPIs)
     across Swedish municipalities for one or more specified years. It calculates
     either the difference or the correlation between the KPIs, depending on
     whether a single year or multiple years are provided.
+    
+    If municipality_ids is provided, only those specific municipalities will be compared
+    and no ranking (top, bottom, or median) is computed. A flat list of results is returned instead.
 
     **Use Cases:**
     *   "How does KPI [A] correlate with KPI [B] across municipalities in year [YYYY]?"
@@ -127,10 +131,8 @@ async def compare_kpis(
 
     municipality_map: dict[str, KoladaMunicipality] = lifespan_ctx["municipality_map"]
 
-    if year:
-        url1: str = f"{BASE_URL}/data/kpi/{kpi1_id}/year/{year}"
-    else:
-        url1 = f"{BASE_URL}/data/kpi/{kpi1_id}"
+    from tools.url_builders import build_kolada_url_for_kpi
+    url1: str = build_kolada_url_for_kpi(BASE_URL, kpi1_id, municipality_ids, year)
 
     data_kpi1: dict[str, Any] = await fetch_data_from_kolada(url1)
     if "error" in data_kpi1:
@@ -147,10 +149,7 @@ async def compare_kpis(
         fetch_and_group_data_by_municipality(data_kpi1, gender)
     )
 
-    if year:
-        url2: str = f"{BASE_URL}/data/kpi/{kpi2_id}/year/{year}"
-    else:
-        url2 = f"{BASE_URL}/data/kpi/{kpi2_id}"
+    url2: str = build_kolada_url_for_kpi(BASE_URL, kpi2_id, municipality_ids, year)
 
     data_kpi2: dict[str, Any] = await fetch_data_from_kolada(url2)
     if "error" in data_kpi2:
@@ -244,6 +243,13 @@ async def compare_kpis(
                 "error": f"No overlapping data for single year {single_year}.",
             }
 
+        # If municipality_ids is provided, skip ranking and return flat list
+        if municipality_ids:
+            return {
+                **result,
+                "flat_results": cross_section_data,
+            }
+
         overall_corr: float | None = await compute_pearson_correlation(x_vals, y_vals)
         result["overall_correlation"] = overall_corr
 
@@ -300,6 +306,13 @@ async def compare_kpis(
                     "n_years": len(intersection_years),
                 }
             )
+
+    # If municipality_ids is provided, skip ranking and return flat list
+    if municipality_ids:
+        return {
+            **result,
+            "flat_correlation_results": municipality_correlations,
+        }
 
     overall_corr: float | None = await compute_pearson_correlation(big_x, big_y)
     result["overall_correlation"] = overall_corr

@@ -116,6 +116,26 @@ def parse_years_param(year_str: str) -> list[str]:
     return parts
 
 
+def build_flat_list_of_municipalities(
+    municipality_data: dict[str, dict[str, float]],
+    municipality_map: dict[str, KoladaMunicipality],
+    years: list[str]
+) -> list[dict[str, Any]]:
+    """
+    Returns a flat list of municipality results without any ranking.
+    Each entry includes municipality_id, municipality_name, and all available year values.
+    """
+    flat_list = []
+    for m_id, year_vals in municipality_data.items():
+        entry = {
+            "municipality_id": m_id,
+            "municipality_name": municipality_map.get(m_id, {}).get("title", f"Kommun {m_id}"),
+            "data": {year: year_vals.get(year) for year in years if year in year_vals}
+        }
+        flat_list.append(entry)
+    return flat_list
+
+
 def process_kpi_data(
     municipality_data: dict[str, dict[str, float]],
     municipality_map: dict[str, KoladaMunicipality],

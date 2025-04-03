@@ -17,7 +17,7 @@ from utils.context import safe_get_lifespan_context  # type: ignore[Context]
 
 async def fetch_kolada_data(
     kpi_id: str,
-    municipality_id: str,
+    municipality_id: str,  # This can be comma-separated
     ctx: Context,  # type: ignore[Context]
     year: str | None = None,
     municipality_type: str = "K",
@@ -27,6 +27,9 @@ async def fetch_kolada_data(
     Kolada Key Performance Indicator (KPI) within a single designated Swedish
     municipality or region. It allows specifying particular years or retrieving
     all available historical data points for that specific KPI/municipality pair.
+    
+    The municipality_id parameter can be a comma-separated string to fetch data for
+    multiple municipalities in a single request.
 
     **Use Cases:**
     *   "What was the exact value for KPI [ID or name] in [Municipality Name or ID] for the year [YYYY]?"
@@ -124,6 +127,7 @@ async def analyze_kpi_across_municipalities(
     gender: str = "T",
     only_return_rate: bool = False,
     municipality_type: str = "K",
+    municipality_ids: str | None = None,
 ) -> dict[str, Any]:
     """
     **Purpose:** Analyzes a single Kolada Key Performance Indicator (KPI) across
@@ -133,6 +137,9 @@ async def analyze_kpi_across_municipalities(
     KPI's value. If multiple years are provided, it also calculates and ranks
     the change (delta) in the KPI value over the specified period for each
     municipality.
+    
+    If municipality_ids is provided, only those specific municipalities will be analyzed
+    and no ranking (top, bottom, or median) is computed. A flat list of results is returned instead.
 
     **Use Cases:**
     *   "Which municipalities had the highest [KPI description, e.g., population] in year [YYYY]?"
@@ -230,11 +237,8 @@ async def analyze_kpi_across_municipalities(
     municipality_map: dict[str, KoladaMunicipality] = lifespan_ctx["municipality_map"]
     year_list: list[str] = parse_years_param(year)
 
-    url: str
-    if year:
-        url = f"{BASE_URL}/data/kpi/{kpi_id}/year/{year}"
-    else:
-        url = f"{BASE_URL}/data/kpi/{kpi_id}"
+    from tools.url_builders import build_kolada_url_for_kpi
+    url: str = build_kolada_url_for_kpi(BASE_URL, kpi_id, municipality_ids, year)
 
     kolada_data: dict[str, Any] = await fetch_data_from_kolada(url)
     if "error" in kolada_data:
@@ -264,13 +268,29 @@ async def analyze_kpi_across_municipalities(
             if actual_type == municipality_type:
                 filtered_municipality_data[m_id] = yearly_vals
 
-    return process_kpi_data(
-        municipality_data=filtered_municipality_data,
-        municipality_map=municipality_map,
-        years=year_list,
-        sort_order=sort_order,
-        limit=limit,
-        kpi_metadata=kpi_metadata,
-        gender=gender,
-        only_return_rate=only_return_rate,
-    )
+    # If user specified municipality_ids, skip ranking and return flat list
+    if municipality_ids:
+        result_list = build_flat_list_of_municipalities(
+            filtered_municipality_data,
+            municipality_map,
+            year_list
+        )
+        return {
+            "kpi_info": kpi_metadata,
+            "selected_years": year_list,
+            "selected_gender": gender,
+            "only_return_rate": only_return_rate,
+            "municipalities_count": len(result_list),
+            "municipalities_data": result_list
+        }
+    else:
+        return process_kpi_data(
+            municipality_data=filtered_municipality_data,
+            municipality_map=municipality_map,
+            years=year_list,
+            sort_order=sort_order,
+            limit=limit,
+            kpi_metadata=kpi_metadata,
+            gender=gender,
+            only_return_rate=only_return_rate,
+        )
