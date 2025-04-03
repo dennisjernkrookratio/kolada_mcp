@@ -4,7 +4,7 @@ import statistics  # For median and mean calculation
 import sys
 import traceback
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, TypedDict, cast
+from typing import Any, AsyncIterator, Required, TypedDict, cast
 
 import httpx
 import numpy as np
@@ -37,7 +37,7 @@ class KoladaKpi(TypedDict, total=False):
     like economy, schools, healthcare, environment, etc.
     """
 
-    id: str  # The unique identifier for the KPI (e.g., "N00945")
+    id: Required[str]  # The unique identifier for the KPI (e.g., "N00945")
     title: str  # The human-readable name of the KPI (e.g., "Population size")
     description: str  # A longer explanation of the KPI.
     operating_area: str  # The thematic category/categories (e.g., "Demographics", "Economy,Environment")
@@ -210,7 +210,6 @@ def _fetch_and_group_data_by_municipality(
                 f"Warning: Skipping due to missing municipality_id or period: {item}",
                 file=sys.stderr,
             )
-            continue
 
         period_str: str = str(raw_period)
 
@@ -564,8 +563,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     kpi_map: dict[str, KoladaKpi] = {}
     for kpi_obj in kpi_list:
         k_id = kpi_obj.get("id")
-        if k_id is not None:
-            kpi_map[k_id] = kpi_obj
 
     municipality_map: dict[str, KoladaMunicipality] = {}
     for m_obj in municipality_list:
@@ -613,7 +610,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
                 np.load(EMBEDDINGS_CACHE_FILE, allow_pickle=True)
             )
             existing_embeddings = cache_data.get("embeddings", None)
-            loaded_ids_arr: npt.NDArray[np.str_] = cache_data.get("kpi_ids", None)
+            loaded_ids_arr: npt.NDArray[np.str_] = cache_data.get("kpi_ids", [])
             loaded_ids = loaded_ids_arr.tolist()
         except Exception as ex:
             print(f"[Kolada MCP] Failed to load .npz cache: {ex}", file=sys.stderr)
