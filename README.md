@@ -43,6 +43,9 @@ Kolada MCP server acts as an intelligent middleware between LLM-based applicatio
 7. `compare_kpis`
    - Evaluate the correlation or difference between two KPIs.
 
+8. `list_municipalities`
+   - Returns a list of municipality IDs and names filtered by type (default is `"K"`). Passing an empty string for `municipality_type` returns municipalities of all types.
+
 
 ## Quick Start
 
