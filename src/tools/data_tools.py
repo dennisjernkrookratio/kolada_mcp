@@ -8,6 +8,7 @@ from models.types import KoladaKpi, KoladaLifespanContext, KoladaMunicipality
 from services.api import fetch_data_from_kolada
 from services.data_processing import (
     build_flat_list_of_municipalities,
+    build_flat_list_of_municipalities_with_delta,
     fetch_and_group_data_by_municipality,
     parse_years_param,
     process_kpi_data,  # type: ignore[Context]
