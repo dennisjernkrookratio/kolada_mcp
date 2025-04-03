@@ -1,18 +1,19 @@
-import sys
 import json
+import sys
 import traceback
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, cast, Any
+from typing import Any, AsyncIterator, cast
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from sentence_transformers import SentenceTransformer
 
-from kolada_mcp.config import BASE_URL, KPI_PER_PAGE
-from kolada_mcp.models.types import KoladaKpi, KoladaMunicipality, KoladaLifespanContext
-from kolada_mcp.services.api import fetch_data_from_kolada
-from kolada_mcp.services.data_processing import get_operating_areas_summary
-from kolada_mcp.services.embeddings import load_or_create_embeddings
+from config import BASE_URL, KPI_PER_PAGE
+from models.types import KoladaKpi, KoladaLifespanContext, KoladaMunicipality
+from services.api import fetch_data_from_kolada
+from services.data_processing import get_operating_areas_summary
+from services.embeddings import load_or_create_embeddings
+
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
@@ -82,8 +83,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     kpi_map: dict[str, KoladaKpi] = {}
     for kpi_obj in kpi_list:
         k_id: str | None = kpi_obj.get("id")
-        if k_id is not None:
-            kpi_map[k_id] = kpi_obj
+        kpi_map[k_id] = kpi_obj
 
     municipality_map: dict[str, KoladaMunicipality] = {}
     for m_obj in municipality_list:
@@ -104,7 +104,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     # ----------------------------------------------------------------
     print("[Kolada MCP] Loading SentenceTransformer model...", file=sys.stderr)
     sentence_model: SentenceTransformer = SentenceTransformer(
-        "KBLab/sentence-bert-swedish-cased"
+        "KBLab/sentence-bert-swedish-cased"  # type: ignore
     )
     print("[Kolada MCP] Model loaded.", file=sys.stderr)
 

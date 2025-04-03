@@ -2,7 +2,7 @@
 import sys
 import traceback
 
-from kolada_mcp import mcp
+from src.server import mcp
 
 if __name__ == "__main__":
     print("[Kolada MCP Main] Script starting...", file=sys.stderr)

@@ -1,11 +1,13 @@
 import sys
-import numpy as np
-from typing import Any
-from mcp.server.fastmcp.server import Context
-from kolada_mcp.models.types import KoladaKpi, KoladaLifespanContext
-from kolada_mcp.utils.context import safe_get_lifespan_context
 
-async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:
+import numpy as np
+from mcp.server.fastmcp.server import Context
+
+from models.types import KoladaKpi, KoladaLifespanContext
+from utils.context import safe_get_lifespan_context  # type: ignore[Context]
+
+
+async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:  # type: ignore[Context]
     """
     **Step 1: Discover KPI Categories.**
     Retrieves a summary of all available 'operating areas' (thematic categories)
@@ -40,7 +42,7 @@ async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:
 
 async def get_kpis_by_operating_area(
     operating_area: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
 ) -> list[KoladaKpi]:
     """
     **Step 2: Filter KPIs by Category.**
@@ -88,7 +90,7 @@ async def get_kpis_by_operating_area(
 
 async def get_kpi_metadata(
     kpi_id: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
 ) -> KoladaKpi | dict[str, str]:
     """
     Retrieves the cached metadata (title, description, operating area) for a
@@ -124,7 +126,7 @@ async def get_kpi_metadata(
 
 async def search_kpis(
     keyword: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     limit: int = 20,
 ) -> list[KoladaKpi]:
     """
@@ -193,9 +195,7 @@ async def search_kpis(
         return empty_list
 
     # 1) Embed user query
-    query_vector = model.encode(
-        [keyword], normalize_embeddings=True
-    )
+    query_vector = model.encode([keyword], normalize_embeddings=True)  # type: ignore[encode]
     query_vec = query_vector[0]
 
     # 2) Compute dot products with normalized embeddings

@@ -1,9 +1,10 @@
-import sys
 import json
+import sys
 import traceback
-import httpx
 from typing import Any
-from kolada_mcp.config import BASE_URL
+
+import httpx
+
 
 async def fetch_data_from_kolada(url: str) -> dict[str, Any]:
     """

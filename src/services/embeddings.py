@@ -1,15 +1,17 @@
 import os
 import sys
 from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 from sentence_transformers import SentenceTransformer
-from kolada_mcp.config import EMBEDDINGS_CACHE_FILE
-from kolada_mcp.models.types import KoladaKpi
+
+from config import EMBEDDINGS_CACHE_FILE
+from models.types import KoladaKpi
+
 
 async def load_or_create_embeddings(
-    all_kpis: list[KoladaKpi], 
-    model: SentenceTransformer
+    all_kpis: list[KoladaKpi], model: SentenceTransformer
 ) -> tuple[npt.NDArray[np.float32], list[str]]:
     """
     Loads existing embeddings from cache file or creates new ones if needed.
@@ -63,7 +65,7 @@ async def load_or_create_embeddings(
             "[Kolada MCP] Generating new embeddings for all KPI titles...",
             file=sys.stderr,
         )
-        embeddings = model.encode(
+        embeddings = model.encode(  # type: ignore[encode]
             titles_list, show_progress_bar=True, normalize_embeddings=True
         )
 
@@ -80,5 +82,5 @@ async def load_or_create_embeddings(
                 f"[Kolada MCP] WARNING: Failed to save embeddings: {ex}",
                 file=sys.stderr,
             )
-            
+
     return embeddings, kpi_ids_list

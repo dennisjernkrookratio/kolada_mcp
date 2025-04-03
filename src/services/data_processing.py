@@ -1,7 +1,14 @@
 import sys
-import polars as pl
 from typing import Any
-from kolada_mcp.models.types import KoladaKpi, KoladaMunicipality
+
+import polars as pl
+
+from models.types import KoladaKpi, KoladaMunicipality
+from utils.statistics import (
+    calculate_summary_stats,
+    rank_and_slice_municipalities,
+)
+
 
 def group_kpis_by_operating_area(
     kpis: list[KoladaKpi],
@@ -125,8 +132,6 @@ def process_kpi_data(
     It also calculates summary statistics and ranks the municipalities based
     on the specified sort order.
     """
-    import statistics
-    from kolada_mcp.utils.statistics import calculate_summary_stats, rank_and_slice_municipalities
 
     sorted_years: list[str] = sorted(years)
     is_multi_year: bool = len(sorted_years) > 1

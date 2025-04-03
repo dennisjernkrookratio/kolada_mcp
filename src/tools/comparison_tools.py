@@ -1,19 +1,24 @@
-import sys
 import statistics
 from typing import Any
+
 from mcp.server.fastmcp.server import Context
-from kolada_mcp.models.types import KoladaKpi, KoladaMunicipality, KoladaLifespanContext
-from kolada_mcp.utils.context import safe_get_lifespan_context
-from kolada_mcp.services.api import fetch_data_from_kolada
-from kolada_mcp.services.data_processing import fetch_and_group_data_by_municipality, parse_years_param
-from kolada_mcp.config import BASE_URL
-from kolada_mcp.tools.metadata_tools import get_kpi_metadata
+
+from config import BASE_URL
+from models.types import KoladaKpi, KoladaLifespanContext, KoladaMunicipality
+from services.api import fetch_data_from_kolada
+from services.data_processing import (
+    fetch_and_group_data_by_municipality,
+    parse_years_param,
+)
+from tools.metadata_tools import get_kpi_metadata  # type: ignore[Context]
+from utils.context import safe_get_lifespan_context  # type: ignore[Context]
+
 
 async def compare_kpis(
     kpi1_id: str,
     kpi2_id: str,
     year: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     gender: str = "T",
     municipality_type: str = "K",
 ) -> dict[str, Any]:

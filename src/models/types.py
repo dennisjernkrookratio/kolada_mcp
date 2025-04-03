@@ -1,7 +1,9 @@
-from typing import Any, Required, TypedDict, cast
+from typing import Required, TypedDict
+
 import numpy as np
 import numpy.typing as npt
 from sentence_transformers import SentenceTransformer
+
 
 class KoladaKpi(TypedDict, total=False):
     """

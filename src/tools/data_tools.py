@@ -1,17 +1,24 @@
 import sys
 from typing import Any
+
 from mcp.server.fastmcp.server import Context
-from kolada_mcp.models.types import KoladaKpi, KoladaMunicipality, KoladaLifespanContext
-from kolada_mcp.utils.context import safe_get_lifespan_context
-from kolada_mcp.services.api import fetch_data_from_kolada
-from kolada_mcp.services.data_processing import fetch_and_group_data_by_municipality, parse_years_param, process_kpi_data
-from kolada_mcp.config import BASE_URL
-from kolada_mcp.tools.metadata_tools import get_kpi_metadata
+
+from config import BASE_URL
+from models.types import KoladaKpi, KoladaLifespanContext, KoladaMunicipality
+from services.api import fetch_data_from_kolada
+from services.data_processing import (
+    fetch_and_group_data_by_municipality,
+    parse_years_param,
+    process_kpi_data,  # type: ignore[Context]
+)
+from tools.metadata_tools import get_kpi_metadata  # type: ignore[Context]
+from utils.context import safe_get_lifespan_context  # type: ignore[Context]
+
 
 async def fetch_kolada_data(
     kpi_id: str,
     municipality_id: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     year: str | None = None,
     municipality_type: str = "K",
 ) -> dict[str, Any]:
@@ -90,7 +97,7 @@ async def fetch_kolada_data(
     url: str = f"{BASE_URL}/data/kpi/{kpi_id}/municipality/{municipality_id}"
     if year:
         url += f"/year/{year}"
-        
+
     resp_data: dict[str, Any] = await fetch_data_from_kolada(url)
     if "error" in resp_data:
         return resp_data
@@ -110,7 +117,7 @@ async def fetch_kolada_data(
 
 async def analyze_kpi_across_municipalities(
     kpi_id: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     year: str,
     sort_order: str = "desc",
     limit: int = 10,
