@@ -16,13 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import Context
 from sentence_transformers import SentenceTransformer
 
-###############################################################################
-# 1) Global Constants
-###############################################################################
-BASE_URL: str = "https://api.kolada.se/v2"
-KPI_PER_PAGE: int = 5000
-EMBEDDINGS_CACHE_FILE: str = "kpi_embeddings.npz"
-
+from kolada_mcp.config import BASE_URL, EMBEDDINGS_CACHE_FILE, KPI_PER_PAGE
 
 ###############################################################################
 # 2) Typed structures for your Kolada data
@@ -563,6 +557,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     kpi_map: dict[str, KoladaKpi] = {}
     for kpi_obj in kpi_list:
         k_id = kpi_obj.get("id")
+        if k_id is not None:
+            kpi_map[k_id] = kpi_obj
 
     municipality_map: dict[str, KoladaMunicipality] = {}
     for m_obj in municipality_list:
@@ -1538,25 +1534,3 @@ def kolada_entry_point() -> str:
         "6. If no data is found, let the user know.\n"
         "\n**Now, analyze the user's request and determine the best tool(s) and sequence to use.**"
     )
-
-
-###############################################################################
-# 10) Main entry
-###############################################################################
-
-if __name__ == "__main__":
-    print("[Kolada MCP Main] TOP LEVEL OF MAIN REACHED", file=sys.stderr)
-    print("[Kolada MCP Main] Script starting...", file=sys.stderr)
-    try:
-        print(
-            "[Kolada MCP Main] Calling mcp.run(transport='stdio')...", file=sys.stderr
-        )
-        mcp.run(transport="stdio")
-        print("[Kolada MCP Main] mcp.run() finished unexpectedly.", file=sys.stderr)
-    except Exception as e:
-        print(
-            f"[Kolada MCP Main] EXCEPTION caught around mcp.run(): {e}", file=sys.stderr
-        )
-        traceback.print_exc(file=sys.stderr)
-    finally:
-        print("[Kolada MCP Main] Script exiting.", file=sys.stderr)
