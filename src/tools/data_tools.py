@@ -88,17 +88,22 @@ async def fetch_kolada_data(
         return {"error": "kpi_id and municipality_id are required."}
 
     municipality_map: dict[str, KoladaMunicipality] = lifespan_ctx["municipality_map"]
-    if municipality_id not in municipality_map:
-        return {"error": f"Municipality ID '{municipality_id}' not found in system."}
+    muni_ids = [mid.strip() for mid in municipality_id.split(",") if mid.strip()]
+    if not muni_ids:
+        return {"error": "No valid municipality ID provided."}
+    for mid in muni_ids:
+        if mid not in municipality_map:
+            return {"error": f"Municipality ID '{mid}' not found in system."}
 
-    actual_type: str | None = municipality_map[municipality_id].get("type", None)
-    if actual_type != municipality_type:
-        return {
-            "error": f"Municipality '{municipality_id}' is type '{actual_type}', "
-            f"but user requested type '{municipality_type}'."
-        }
+    for mid in muni_ids:
+        actual_type = municipality_map[mid].get("type", None)
+        if actual_type != municipality_type:
+            return {
+                "error": f"Municipality '{mid}' is type '{actual_type}', but user requested type '{municipality_type}'."
+            }
 
-    url: str = f"{BASE_URL}/data/kpi/{kpi_id}/municipality/{municipality_id}"
+    muni_ids_clean = ",".join(muni_ids)
+    url: str = f"{BASE_URL}/data/kpi/{kpi_id}/municipality/{muni_ids_clean}"
     if year:
         url += f"/year/{year}"
 
