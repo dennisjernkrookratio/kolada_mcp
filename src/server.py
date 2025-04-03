@@ -10,7 +10,7 @@ from tools.data_tools import (
     analyze_kpi_across_municipalities,  # type: ignore[Context]
     fetch_kolada_data,  # type: ignore[Context]
 )
-from tools.municipality_tools import list_municipalities  # type: ignore[Context]
+from tools.municipality_tools import list_municipalities, filter_municipalities_by_kpi  # type: ignore[Context]
 from tools.metadata_tools import (
     get_kpi_metadata,  # type: ignore[Context]
     get_kpis_by_operating_area,  # type: ignore[Context]
@@ -30,6 +30,7 @@ mcp.tool()(fetch_kolada_data)  # type: ignore[Context]
 mcp.tool()(analyze_kpi_across_municipalities)  # type: ignore[Context]
 mcp.tool()(compare_kpis)  # type: ignore[Context]
 mcp.tool()(list_municipalities)  # type: ignore[Context]
+mcp.tool()(filter_municipalities_by_kpi)  # type: ignore[Context]
 
 # Register the prompt
 mcp.prompt()(kolada_entry_point)
