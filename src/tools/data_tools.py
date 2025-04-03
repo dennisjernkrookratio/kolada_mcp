@@ -277,7 +277,7 @@ async def analyze_kpi_across_municipalities(
 
     # If user specified municipality_ids, skip ranking and return flat list
     if municipality_ids:
-        result_list = build_flat_list_of_municipalities(
+        result_list = build_flat_list_of_municipalities_with_delta(
             filtered_municipality_data,
             municipality_map,
             year_list

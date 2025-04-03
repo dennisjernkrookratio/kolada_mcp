@@ -136,6 +136,39 @@ def build_flat_list_of_municipalities(
     return flat_list
 
 
+def build_flat_list_of_municipalities_with_delta(
+    municipality_data: dict[str, dict[str, float]],
+    municipality_map: dict[str, KoladaMunicipality],
+    years: list[str]
+) -> list[dict[str, Any]]:
+    """
+    Returns a flat list of municipality results including delta calculations.
+    Each entry includes municipality_id, municipality_name, the raw data per year,
+    and, if available, the latest and earliest years with their values as well as
+    the computed delta (latest_value - earliest_value).
+    """
+    flat_list = []
+    for m_id, year_vals in municipality_data.items():
+        # Only include requested years that are available
+        available_years = [year for year in years if year in year_vals]
+        available_years.sort()  # ascending order
+
+        entry = {
+            "municipality_id": m_id,
+            "municipality_name": municipality_map.get(m_id, {}).get("title", f"Kommun {m_id}"),
+            "data": {year: year_vals[year] for year in available_years},
+        }
+        if available_years:
+            entry["latest_year"] = available_years[-1]
+            entry["latest_value"] = year_vals[available_years[-1]]
+            if len(available_years) >= 2:
+                entry["earliest_year"] = available_years[0]
+                entry["earliest_value"] = year_vals[available_years[0]]
+                entry["delta_value"] = year_vals[available_years[-1]] - year_vals[available_years[0]]
+        flat_list.append(entry)
+    return flat_list
+
+
 def process_kpi_data(
     municipality_data: dict[str, dict[str, float]],
     municipality_map: dict[str, KoladaMunicipality],
