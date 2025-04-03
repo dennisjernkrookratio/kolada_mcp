@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, TypedDict, cast
 
 import httpx
 import numpy as np
+import numpy.typing as npt
 import polars as pl
 
 # Use the base Context provided by the framework for type hinting in tools
@@ -73,7 +74,7 @@ class KoladaLifespanContext(TypedDict):
 
     # Vector search additions
     sentence_model: SentenceTransformer  # The loaded embedding model
-    kpi_embeddings: np.ndarray  # shape (num_kpis, embedding_dim)
+    kpi_embeddings: npt.NDArray[np.float32]  # The embeddings for all KPIs
     kpi_ids: list[str]  # KPI IDs in the same order as rows in kpi_embeddings
 
 
@@ -159,21 +160,23 @@ async def _fetch_data_from_kolada(url: str) -> dict[str, Any]:
     }
 
 
-def _safe_get_lifespan_context(ctx: Context) -> KoladaLifespanContext | None:
+def _safe_get_lifespan_context(
+    ctx: Context,  # type: ignore[Context]
+) -> KoladaLifespanContext | None:
     """
     Safely retrieves the KoladaLifespanContext from the standard context structure.
     Returns None if the context is invalid or incomplete.
     """
     if (
         not ctx
-        or not hasattr(ctx, "request_context")
-        or not ctx.request_context
-        or not hasattr(ctx.request_context, "lifespan_context")
-        or not ctx.request_context.lifespan_context
+        or not hasattr(ctx, "request_context")  # type: ignore
+        or not ctx.request_context  # type: ignore
+        or not hasattr(ctx.request_context, "lifespan_context")  # type: ignore
+        or not ctx.request_context.lifespan_context  # type: ignore
     ):
         print("[Kolada MCP] Invalid or incomplete context structure.", file=sys.stderr)
         return None
-    return cast(KoladaLifespanContext, ctx.request_context.lifespan_context)
+    return cast(KoladaLifespanContext, ctx.request_context.lifespan_context)  # type: ignore
 
 
 def _parse_years_param(year_str: str) -> list[str]:
@@ -343,8 +346,10 @@ def _process_kpi_data(
     only_return_rate: bool,
 ) -> dict[str, Any]:
     """
-    See docstring above in the original code: this function handles single-year
-    or multi-year data, returning structured stats and top/bottom slices.
+    This function processes the KPI data for a given municipality and returns
+    a summary of the results. It handles both single-year and multi-year data.
+    It also calculates summary statistics and ranks the municipalities based
+    on the specified sort order.
     """
 
     sorted_years: list[str] = sorted(years)
@@ -555,9 +560,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
         )
         raise RuntimeError(f"Failed to initialize municipality cache: {e}") from e
 
+    k_id: str | None
     kpi_map: dict[str, KoladaKpi] = {}
     for kpi_obj in kpi_list:
-        k_id: str | None = kpi_obj.get("id")
+        k_id = kpi_obj.get("id")
         if k_id is not None:
             kpi_map[k_id] = kpi_obj
 
@@ -580,8 +586,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     # ----------------------------------------------------------------
     print("[Kolada MCP] Loading SentenceTransformer model...", file=sys.stderr)
     sentence_model: SentenceTransformer = SentenceTransformer(
-        "KBLab/sentence-bert-swedish-cased"
-    )
+        "KBLab/sentence-bert-swedish-cased"  # type: ignore
+    )  # type: ignore
     print("[Kolada MCP] Model loaded.", file=sys.stderr)
 
     all_kpis: list[KoladaKpi] = [k for k in kpi_list if "id" in k]
@@ -589,14 +595,14 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
     titles_list: list[str] = []
 
     for kpi_obj in all_kpis:
-        k_id: str = kpi_obj["id"]
+        k_id = kpi_obj["id"]
         title_str: str = kpi_obj.get("title", "")
         kpi_ids_list.append(k_id)
         titles_list.append(title_str)
 
     # Attempt to load cached .npz
-    existing_embeddings: np.ndarray | None = None
-    loaded_ids: list[str] = []
+    existing_embeddings: npt.NDArray[np.float32] | None = None
+    loaded_ids = []
     if os.path.isfile(EMBEDDINGS_CACHE_FILE):
         print(
             f"[Kolada MCP] Found embeddings cache at {EMBEDDINGS_CACHE_FILE}",
@@ -607,17 +613,22 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
                 np.load(EMBEDDINGS_CACHE_FILE, allow_pickle=True)
             )
             existing_embeddings = cache_data.get("embeddings", None)
-            loaded_ids_arr: Any = cache_data.get("kpi_ids", None)
-            if isinstance(loaded_ids_arr, np.ndarray):
-                loaded_ids = loaded_ids_arr.tolist()
+            loaded_ids_arr: npt.NDArray[np.str_] = cache_data.get("kpi_ids", None)
+            loaded_ids = loaded_ids_arr.tolist()
         except Exception as ex:
             print(f"[Kolada MCP] Failed to load .npz cache: {ex}", file=sys.stderr)
+        if existing_embeddings is None or existing_embeddings.size == 0:
+            print(
+                "[Kolada MCP] WARNING: No valid embeddings found in cache.",
+                file=sys.stderr,
+            )
             existing_embeddings = None
 
     # Check if we can reuse the loaded embeddings
-    embeddings: np.ndarray
+    embeddings: npt.NDArray[np.float32] | None = None
     if (
         existing_embeddings is not None
+        and existing_embeddings.size > 0
         and len(loaded_ids) == len(kpi_ids_list)
         and set(loaded_ids) == set(kpi_ids_list)
     ):
@@ -628,7 +639,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[KoladaLifespanContext]:
             "[Kolada MCP] Generating new embeddings for all KPI titles...",
             file=sys.stderr,
         )
-        embeddings = sentence_model.encode(
+        embeddings = sentence_model.encode(  # type: ignore
             titles_list, show_progress_bar=True, normalize_embeddings=True
         )
 
@@ -695,7 +706,7 @@ mcp: FastMCP = FastMCP("KoladaServer", lifespan=app_lifespan)
 
 
 @mcp.tool()
-async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:
+async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:  # type: ignore[Context]
     """
     **Step 1: Discover KPI Categories.**
     Retrieves a summary of all available 'operating areas' (thematic categories)
@@ -713,7 +724,10 @@ async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:
     lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         error_list: list[dict[str, str]] = [{"error": "Server context invalid."}]
-        return error_list
+        raise RuntimeError(
+            "Server context invalid. Unable to retrieve operating areas."
+            f" Context: {error_list}"
+        )
 
     summary: list[dict[str, str | int]] = lifespan_ctx.get(
         "operating_areas_summary", []
@@ -728,7 +742,7 @@ async def list_operating_areas(ctx: Context) -> list[dict[str, str | int]]:
 @mcp.tool()
 async def get_kpis_by_operating_area(
     operating_area: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
 ) -> list[KoladaKpi]:
     """
     **Step 2: Filter KPIs by Category.**
@@ -777,7 +791,7 @@ async def get_kpis_by_operating_area(
 @mcp.tool()
 async def get_kpi_metadata(
     kpi_id: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
 ) -> KoladaKpi | dict[str, str]:
     """
     Retrieves the cached metadata (title, description, operating area) for a
@@ -814,22 +828,54 @@ async def get_kpi_metadata(
 @mcp.tool()
 async def search_kpis(
     keyword: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     limit: int = 20,
 ) -> list[KoladaKpi]:
     """
-    Performs a simple keyword search within the *cached* titles and descriptions
-    of all Kolada KPIs. This is useful for finding relevant KPIs when you don't
-    know the exact ID or operating area.
-    Returns a limited list of matching KPIs. Search is case-insensitive.
+    **Purpose:** Performs a semantic search for Kolada Key Performance Indicators (KPIs)
+    based on a user-provided keyword or phrase. Instead of simple text matching,
+    it uses vector embeddings to find KPIs whose titles are semantically related
+    to the search term, even if the exact words don't match. This is useful for
+    discovering relevant KPIs when the exact ID, title, or operating area is unknown.
 
-    Args:
-        keyword: The term to search for in KPI titles and descriptions.
-        limit: The maximum number of matching KPIs to return (default 20).
-        ctx: The server context (injected automatically).
+    **Use Cases:**
+    *   "Find KPIs related to 'school results'."
+    *   "Search for indicators about 'environmental quality'."
+    *   "Are there any KPIs measuring 'elderly care satisfaction'?"
+    *   "Look up KPIs for 'unemployment rates'."
+    *   (Used as a preliminary step before using tools like `analyze_kpi_across_municipalities` or `fetch_kolada_data` if the KPI ID is not known).
 
-    Returns:
-        A list of matching KoladaKpi objects (up to the limit).
+    **Arguments:**
+    *   `keyword` (str): The search term or phrase describing the topic of interest. The tool will find KPIs with semantically similar titles. **Required.**
+    *   `ctx` (Context): The server context (automatically injected by the MCP framework). You do not need to provide this.
+    *   `limit` (int, optional): The maximum number of matching KPIs to return, ordered by relevance (highest relevance first). Default is 20.
+
+    **Core Logic:**
+    1.  Accesses the pre-loaded data from the server's lifespan context (`lifespan_ctx`), specifically:
+        *   The `SentenceTransformer` model (e.g., `KBLab/sentence-bert-swedish-cased`).
+        *   The pre-computed `kpi_embeddings` (a NumPy array where each row is the vector embedding of a KPI title).
+        *   The list of `kpi_ids` corresponding to the rows in the embeddings array.
+        *   The `kpi_map` (dictionary mapping KPI IDs to their full metadata objects).
+    2.  Checks if embeddings are available. If not (e.g., failed during startup), returns an empty list.
+    3.  **Embeds the User Query:** Takes the input `keyword` string and uses the loaded SentenceTransformer model to convert it into a numerical vector representation (embedding). This captures the semantic meaning of the keyword.
+    4.  **Calculates Similarity:** Computes the cosine similarity between the user's query vector and *all* the pre-computed KPI title vectors stored in `kpi_embeddings`. Since the embeddings are pre-normalized during startup, this is efficiently done using a matrix-vector dot product (`embeddings @ query_vec`).
+    5.  **Sorts by Relevance:** Sorts the results based on the calculated similarity scores in descending order. The indices of the most similar KPI embeddings are identified.
+    6.  **Selects Top N:** Takes the top `limit` indices from the sorted list.
+    7.  **Retrieves KPI Metadata:** Uses the top indices to look up the corresponding `kpi_ids` and then retrieves the full `KoladaKpi` metadata objects for those IDs from the `kpi_map`.
+    8.  Returns the list of found `KoladaKpi` objects.
+
+    **Return Value:**
+    *   A list of `KoladaKpi` dictionaries (containing `id`, `title`, `description`, `operating_area`).
+    *   The list is sorted by semantic relevance to the `keyword`, with the most relevant KPI appearing first.
+    *   The list contains at most `limit` items.
+    *   Returns an empty list (`[]`) if no relevant KPIs are found or if the embeddings cache is unavailable.
+
+    **Important Notes:**
+    *   This tool operates entirely on **cached data** loaded at server startup. It does **not** call the live Kolada API.
+    *   The search is **semantic**, meaning it looks for related concepts, not just exact word matches. A search for "cars" might find KPIs about "vehicle traffic".
+    *   The quality of the search results depends on the chosen SentenceTransformer model and the clarity/informativeness of the cached KPI titles.
+    *   It searches primarily based on **KPI titles**. While descriptions are part of the metadata, the embeddings used for the search are generated *only* from the titles for efficiency.
+    *   The default `limit` is 20, but can be adjusted if more or fewer results are needed.
     """
     lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
@@ -838,7 +884,7 @@ async def search_kpis(
 
     # --- Vector-based approach (while keeping the original docstring) ---
     model: SentenceTransformer = lifespan_ctx["sentence_model"]
-    embeddings: np.ndarray = lifespan_ctx["kpi_embeddings"]
+    embeddings: npt.NDArray[np.float32] = lifespan_ctx["kpi_embeddings"]
     kpi_ids: list[str] = lifespan_ctx["kpi_ids"]
     kpi_map: dict[str, KoladaKpi] = lifespan_ctx["kpi_map"]
 
@@ -851,22 +897,23 @@ async def search_kpis(
         return empty_list
 
     # 1) Embed user query
-    query_vector: np.ndarray = model.encode([keyword], normalize_embeddings=True)
-    query_vec: np.ndarray = query_vector[0]  # shape (embedding_dim,)
+    query_vector: npt.NDArray[np.float32] = model.encode(  # type: ignore[encode]
+        [keyword], normalize_embeddings=True
+    )
+    query_vec: npt.NDArray[np.float32] = query_vector[0]
 
     # 2) Compute dot products with normalized embeddings
     #    (We assume embeddings is already normalized)
-    sims: np.ndarray = embeddings @ query_vec  # shape (num_kpis,)
+    sims: npt.NDArray[np.float32] = embeddings @ query_vec
 
     # 3) Sort descending by similarity
-    indices_sorted: np.ndarray = np.argsort(-sims)
-    top_indices: np.ndarray = indices_sorted[:limit]
+    indices_sorted: npt.NDArray[np.int64] = np.argsort(-sims)
+    top_indices: npt.NDArray[np.int64] = indices_sorted[:limit]
 
     results: list[KoladaKpi] = []
     for idx in top_indices:
-        kpi_id: str = kpi_ids[idx]
-        if kpi_id in kpi_map:
-            results.append(kpi_map[kpi_id])
+        if kpi_ids[idx] in kpi_map:
+            results.append(kpi_map[kpi_ids[idx]])
 
     return results
 
@@ -875,32 +922,63 @@ async def search_kpis(
 async def fetch_kolada_data(
     kpi_id: str,
     municipality_id: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     year: str | None = None,
     municipality_type: str = "K",
 ) -> dict[str, Any]:
     """
-    Fetches the *actual statistical data values* for a specific Kolada KPI
-    and a specific Swedish municipality (identified by its ID, e.g., "1860" for Åsele).
-    Optionally, you can specify a year or range of years.
-    This tool calls the *live* Kolada API endpoint `/v2/data/kpi/.../municipality/...`.
-    Use this tool *after* you have identified the specific KPI ID and municipality ID you need data for.
+    **Purpose:** Fetches the raw, specific statistical data points for a single
+    Kolada Key Performance Indicator (KPI) within a single designated Swedish
+    municipality or region. It allows specifying particular years or retrieving
+    all available historical data points for that specific KPI/municipality pair.
 
-    Args:
-        kpi_id: The unique ID of the Kolada KPI.
-        municipality_id: The official ID of the Swedish municipality.
-        year: Optional. A specific year (e.g., "2023") or a comma-separated list/range
-              (e.g., "2020,2021,2022"). If None, fetches all available years.
-        municipality_type: (Default = "K"). Filter so that results only come from municipalities
-              of this type ("K", "R", or "L"). If the requested municipality does not match
-              this type, an error is returned.
-        ctx: The server context (injected automatically, currently unused but available).
+    **Use Cases:**
+    *   "What was the exact value for KPI [ID or name] in [Municipality Name or ID] for the year [YYYY]?"
+    *   "Get all historical data points available for KPI [ID] in [Municipality ID]."
+    *   "Retrieve the data for [KPI ID] in [Municipality ID] specifically for the years [YYYY1],[YYYY2]."
+    *   (Used internally by other tools, but can be called directly if a very specific raw data point is needed).
 
-    Returns:
-        A dictionary containing the response from the Kolada API, which typically includes
-        'count', 'values' (list of data points per year/gender), etc., or an error dictionary
-        if the API call fails. Additionally, a 'municipality_name' is attached to each item
-        in 'values' if possible, based on the cached municipality map.
+    **Arguments:**
+    *   `kpi_id` (str): The unique identifier of the Kolada KPI whose data is needed (e.g., "N00945"). Use `search_kpis` or `get_kpis_by_operating_area` if you don't have the ID. **Required.**
+    *   `municipality_id` (str): The official unique identifier of the specific Swedish municipality or region (e.g., "0180" for Stockholm, "1480" for Göteborg). The server cache contains valid IDs. **Required.**
+    *   `ctx` (Context): The server context (automatically injected by the MCP framework). You do not need to provide this.
+    *   `year` (str | None, optional): Specifies the year(s) for which to fetch data.
+        *   `None` (default): Fetches data for *all* available years for this KPI/municipality combination.
+        *   Single Year (e.g., "2023"): Fetches data only for that specific year.
+        *   Multiple Years (e.g., "2020,2021,2022"): Fetches data for the specified years.
+    *   `municipality_type` (str, optional): Ensures the requested `municipality_id` actually corresponds to the expected type ("K", "R", or "L"). If the ID exists but its type in the server cache doesn't match this parameter, an error is returned *before* calling the Kolada API. Default is "K" (Kommun/Municipality).
+
+    **Core Logic:**
+    1.  Retrieves the cached Kolada context (`lifespan_ctx`).
+    2.  Validates that `kpi_id` and `municipality_id` are provided.
+    3.  Looks up the `municipality_id` in the cached `municipality_map`. If not found, returns an error.
+    4.  Checks if the cached type of the `municipality_id` matches the `municipality_type` parameter. If they don't match, returns an error.
+    5.  Constructs the specific Kolada API URL targeting the `/v2/data/kpi/{kpi_id}/municipality/{municipality_id}` endpoint. If `year` is provided, it appends `/year/{year}` to the URL.
+    6.  Calls the internal `_fetch_data_from_kolada` helper function to make the **live call to the Kolada API**, handling potential errors and pagination (though pagination is less common for this specific endpoint).
+    7.  If the API call returns an error, the error dictionary is returned immediately.
+    8.  If the API call is successful, it iterates through the returned data points (in the `values` list of the response). For each data point, it attempts to add a `municipality_name` field by looking up the municipality ID (which should be the one requested) in the cached `municipality_map`.
+    9.  Returns the dictionary received from Kolada (potentially augmented with `municipality_name` fields).
+
+    **Return Value:**
+    A dictionary representing the response from the Kolada API, typically structured as:
+    *   `count` (int): The number of main data entries returned (usually 1, representing the municipality).
+    *   `values` (list[dict]): A list containing the primary data structure(s). For this endpoint, it's usually a list with one dictionary representing the requested municipality. This dictionary typically contains:
+        *   `kpi` (str): The KPI ID.
+        *   `municipality` (str): The Municipality ID.
+        *   `period` (int): The year for the data points within the 'values' sub-list.
+        *   `municipality_name` (str): The human-readable name added by this tool from the cache.
+        *   `values` (list[dict]): A sub-list containing the actual data points, often broken down by gender. Each dict here usually has:
+            *   `gender` (str): "T", "M", or "K".
+            *   `status` (str | None): Data status flag (e.g., None, "B", "M").
+            *   `value` (float | int | None): The actual statistical value.
+    *   (Other potential keys from Kolada API like `value_types`, etc.)
+    *   `error` (str, optional): If an error occurred (e.g., invalid ID provided *to Kolada*, API down, type mismatch detected *before* API call), this key will contain an error message instead of `count` and `values`.
+
+    **Important Notes:**
+    *   This tool makes a **live call to the Kolada API** for each execution.
+    *   It requires **specific, valid** `kpi_id` and `municipality_id`. Use other tools like `search_kpis` or `analyze_kpi_across_municipalities` if you need to explore or compare data more broadly.
+    *   The exact structure of the returned `values` list and its sub-lists depends on the specific KPI and how Kolada structures its data (e.g., whether it includes gender breakdowns).
+    *   The `municipality_type` check happens *before* the API call, preventing unnecessary requests if the provided ID is known to be of the wrong type based on the server's cache.
     """
     lifespan_ctx: KoladaLifespanContext | None = _safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
@@ -941,7 +1019,7 @@ async def fetch_kolada_data(
 @mcp.tool()
 async def analyze_kpi_across_municipalities(
     kpi_id: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     year: str,
     sort_order: str = "desc",
     limit: int = 10,
@@ -950,13 +1028,84 @@ async def analyze_kpi_across_municipalities(
     municipality_type: str = "K",
 ) -> dict[str, Any]:
     """
-    Analyzes a KPI across all municipalities and returns structured data.
-    Now updated to a unified approach for single-year & multi-year:
+    **Purpose:** Analyzes a single Kolada Key Performance Indicator (KPI) across
+    all relevant Swedish municipalities for one or more specified years. It
+    provides overall summary statistics (min, max, mean, median) and lists
+    of municipalities ranking highest, lowest, and around the median for the
+    KPI's value. If multiple years are provided, it also calculates and ranks
+    the change (delta) in the KPI value over the specified period for each
+    municipality.
 
-    1. If ONLY ONE year is specified ...
-    2. If MULTIPLE years are specified ...
-    ...
-    (Docstring truncated for brevity, see above for full text.)
+    **Use Cases:**
+    *   "Which municipalities had the highest [KPI description, e.g., population] in year [YYYY]?"
+    *   "Show the lowest performing municipalities for KPI [ID or name] in [YYYY], sorted ascending."
+    *   "What are the average, minimum, and maximum values for [KPI description] across all municipalities in [YYYY]?"
+    *   "Analyze KPI [ID or name] for the years [YYYY1],[YYYY2]. Which municipalities showed the largest increase?"
+    *   "Get only the rate of change statistics for [KPI description] between [YYYY1] and [YYYY2]."
+    *   "Compare regions (type R) based on their values for KPI [ID] in [YYYY]."
+
+    **Arguments:**
+    *   `kpi_id` (str): The unique identifier of the Kolada KPI to analyze (e.g., "N00945"). Use `search_kpis` or `get_kpis_by_operating_area` if you don't have the ID. **Required.**
+    *   `ctx` (Context): The server context (automatically injected by the MCP framework). You do not need to provide this.
+    *   `year` (str): Specifies the year(s) for the analysis.
+        *   **Single Year:** Provide a single year (e.g., "2022"). Analysis focuses on the values in that year.
+        *   **Multiple Years:** Provide a comma-separated list of years (e.g., "2020,2021,2022"). Analysis includes both the latest value within the range and the *change (delta)* between the earliest and latest available year within the range for each municipality.
+        **Required.**
+    *   `sort_order` (str, optional): Determines the sorting direction for rankings.
+        *   "desc": Descending order (highest values first, default).
+        *   "asc": Ascending order (lowest values first).
+    *   `limit` (int, optional): The maximum number of municipalities to include in the 'top', 'bottom', and 'median' ranking lists (default is 10).
+    *   `gender` (str, optional): Filters the data by gender before analysis.
+        *   "T": Total (default)
+        *   "M": Men
+        *   "K": Women
+    *   `only_return_rate` (bool, optional): If True **and** multiple years are specified, the returned results will *only* include statistics and rankings related to the *change (delta)* over the period. The statistics and rankings based on the absolute latest value will be omitted. Default is False. Has no effect if only a single year is provided.
+    *   `municipality_type` (str, optional): Filters the analysis to include only municipalities of a specific type.
+        *   "K": Kommun (Municipality, default)
+        *   "R": Region
+        *   "L": Landsting (County Council - older term, often equivalent to Region)
+        The tool will only include municipalities matching this type in the analysis.
+
+    **Core Logic:**
+    1.  Retrieves metadata (title, description, etc.) for the specified `kpi_id` from the server cache.
+    2.  Parses the `year` parameter into a list of years.
+    3.  Constructs the appropriate URL and fetches the actual data values **from the live Kolada API** for the given `kpi_id` and `year`(s) across all municipalities.
+    4.  Processes the raw API response: filters by the specified `gender`, extracts values, and groups them into a structure like `{ municipality_id: { year: value } }`.
+    5.  Filters this grouped data to include only municipalities matching the specified `municipality_type`.
+    6.  Performs the main analysis (`_process_kpi_data`):
+        *   For each included municipality, identifies the value for the latest available year within the requested `year` range (`latest_value`).
+        *   If multiple years were requested and data exists for at least two years for a municipality within that range, calculates the `delta_value` (`latest_value` - `earliest_value` in range).
+        *   Calculates overall summary statistics (min, max, mean, median, count) across all included municipalities based on their `latest_value`.
+        *   If delta values were calculated, calculates overall summary statistics for the `delta_value` across relevant municipalities.
+        *   Ranks municipalities based on `latest_value` according to `sort_order` and extracts top, bottom, and median lists based on `limit`.
+        *   If delta values were calculated, ranks municipalities based on `delta_value` and extracts top, bottom, and median lists for the delta.
+    7.  Constructs and returns a detailed dictionary based on the analysis results and the `only_return_rate` flag.
+
+    **Return Value:**
+    A dictionary containing:
+    *   `kpi_info` (dict): Metadata (id, title, description, area) for the analyzed KPI.
+    *   `selected_years` (list[str]): The list of years used in the analysis.
+    *   `selected_gender` (str): The gender filter used.
+    *   `sort_order` (str): The sorting order used for rankings.
+    *   `limit` (int): The limit used for the size of ranking lists.
+    *   `multi_year_delta` (bool): True if multiple years were specified AND delta calculations were possible for at least one municipality.
+    *   `only_return_rate` (bool): Reflects the value of the input parameter.
+    *   `municipalities_count` (int): The number of municipalities included in the analysis after all filtering (gender, type, data availability).
+    *   `summary_stats` (dict): Overall statistics (`min_latest`, `max_latest`, `mean_latest`, `median_latest`, `count`) based on the latest available value for each municipality. **Omitted if `only_return_rate` is True and `multi_year_delta` is True.**
+    *   `top_municipalities` (list[dict]): List of municipalities (up to `limit`) with the highest `latest_value` (or lowest if `sort_order`="asc"). Each entry contains `municipality_id`, `municipality_name`, `latest_year`, `latest_value`, potentially `earliest_year`, `earliest_value`, `delta_value`. **Omitted if `only_return_rate` is True and `multi_year_delta` is True.**
+    *   `bottom_municipalities` (list[dict]): List of municipalities (up to `limit`) with the lowest `latest_value` (or highest if `sort_order`="asc"). **Omitted if `only_return_rate` is True and `multi_year_delta` is True.**
+    *   `median_municipalities` (list[dict]): List of municipalities (up to `limit`) around the median `latest_value`. **Omitted if `only_return_rate` is True and `multi_year_delta` is True.**
+    *   `delta_summary_stats` (dict): Overall statistics (`min_delta`, `max_delta`, `mean_delta`, `median_delta`, `count`) based on the calculated change (delta) over the period. **Included only if `multi_year_delta` is True.**
+    *   `top_delta_municipalities` (list[dict]): List of municipalities (up to `limit`) with the highest `delta_value` (largest increase, or decrease if `sort_order`="asc"). **Included only if `multi_year_delta` is True.**
+    *   `bottom_delta_municipalities` (list[dict]): List of municipalities (up to `limit`) with the lowest `delta_value` (largest decrease, or increase if `sort_order`="asc"). **Included only if `multi_year_delta` is True.**
+    *   `median_delta_municipalities` (list[dict]): List of municipalities (up to `limit`) around the median `delta_value`. **Included only if `multi_year_delta` is True.**
+    *   `error` (str, optional): If an error occurred (e.g., API fetch failed, no data found for the parameters), this key will contain an error message.
+
+    **Important Notes:**
+    *   This tool makes a **live call to the Kolada API** to fetch the raw data, which might take some time depending on the KPI and number of years requested.
+    *   The results depend heavily on data availability within Kolada for the specific KPI, years, gender, and municipality type. If no data matching the criteria is found, the counts will be zero and rankings empty.
+    *   The `delta_value` and associated statistics/rankings are only calculated and returned (`multi_year_delta`=True) if multiple years are specified *and* at least one municipality has data for two or more years *within the requested range*.
+    *   Using `only_return_rate=True` can simplify the output when you are specifically interested in the *change* over time rather than the absolute latest values.
     """
     kpi_metadata_result: KoladaKpi | dict[str, str] = await get_kpi_metadata(
         kpi_id, ctx
@@ -1034,15 +1183,82 @@ async def compare_kpis(
     kpi1_id: str,
     kpi2_id: str,
     year: str,
-    ctx: Context,
+    ctx: Context,  # type: ignore[Context]
     gender: str = "T",
     municipality_type: str = "K",
 ) -> dict[str, Any]:
     """
-    Compare two Kolada KPIs across municipalities and compute correlations.
+    **Purpose:** Compares two different Kolada Key Performance Indicators (KPIs)
+    across Swedish municipalities for one or more specified years. It calculates
+    either the difference or the correlation between the KPIs, depending on
+    whether a single year or multiple years are provided.
 
-    The behavior differs depending on single vs multiple years ...
-    (See original docstring above for full details.)
+    **Use Cases:**
+    *   "How does KPI [A] correlate with KPI [B] across municipalities in year [YYYY]?"
+    *   "Compare KPI [X] and KPI [Y] for the years [YYYY1],[YYYY2]. Which municipalities show the strongest positive/negative correlation?"
+    *   "For year [YYYY], which municipalities have the largest difference between KPI [A] and KPI [B]?"
+    *   "Analyze the relationship between [topic 1, e.g., unemployment] and [topic 2, e.g., education level] across municipalities over the period [YYYY1]-[YYYY2]." (Requires finding relevant KPI IDs first using `search_kpis`).
+
+    **Arguments:**
+    *   `kpi1_id` (str): The unique identifier of the first Kolada KPI (e.g., "N00945"). Use `search_kpis` or `get_kpis_by_operating_area` if you don't have the ID. **Required.**
+    *   `kpi2_id` (str): The unique identifier of the second Kolada KPI. **Required.**
+    *   `year` (str): Specifies the year(s) for the comparison.
+        *   **Single Year:** Provide a single year (e.g., "2022"). The tool will calculate the *difference* (KPI2 - KPI1) for each municipality.
+        *   **Multiple Years:** Provide a comma-separated list of years (e.g., "2020,2021,2022"). The tool will calculate the *Pearson correlation* between the time series of the two KPIs *within each municipality* that has data for at least two overlapping years.
+        **Required.**
+    *   `ctx` (Context): The server context (automatically injected by the MCP framework). You do not need to provide this.
+    *   `gender` (str, optional): Filters the data by gender before comparison.
+        *   "T": Total (default)
+        *   "M": Men
+        *   "K": Women
+    *   `municipality_type` (str, optional): Filters the comparison to include only municipalities of a specific type.
+        *   "K": Kommun (Municipality, default)
+        *   "R": Region
+        *   "L": Landsting (County Council - older term, often equivalent to Region)
+        The tool will only include municipalities matching this type in the analysis.
+
+    **Core Logic:**
+    1.  Retrieves metadata for both `kpi1_id` and `kpi2_id` from the server cache.
+    2.  Parses the `year` parameter to determine if it's a single-year or multi-year analysis.
+    3.  Fetches the actual data values **from the live Kolada API** for BOTH `kpi1_id` and `kpi2_id` for the specified `year`(s).
+    4.  Filters the fetched data based on the requested `gender` and `municipality_type`.
+    5.  Identifies municipalities that have data for *both* KPIs for the relevant year(s).
+    6.  **If Single Year:**
+        *   Calculates the difference (`kpi2_value - kpi1_value`) for each common municipality.
+        *   Calculates the overall Pearson correlation between the two KPIs across all common municipalities for that single year.
+        *   Ranks municipalities based on the calculated difference.
+    7.  **If Multiple Years:**
+        *   For each common municipality with at least two overlapping data points, calculates the Pearson correlation between the time series of KPI1 and KPI2.
+        *   Calculates the overall Pearson correlation using *all* available (municipality, year) data points combined.
+        *   Ranks municipalities based on their individual time-series correlations.
+    8.  Constructs and returns a detailed dictionary with the results.
+
+    **Return Value:**
+    A dictionary containing:
+    *   `kpi1_info` (dict): Metadata (id, title, description, area) for the first KPI.
+    *   `kpi2_info` (dict): Metadata for the second KPI.
+    *   `selected_years` (list[str]): The list of years used in the analysis.
+    *   `gender` (str): The gender filter used.
+    *   `municipality_type` (str): The municipality type filter used.
+    *   `multi_year` (bool): True if multiple years were analyzed, False otherwise.
+    *   `overall_correlation` (float | None): The Pearson correlation coefficient calculated across all data points (either all municipalities in a single year, or all municipality-year pairs in a multi-year analysis). Can be `None` if insufficient data exists.
+    *   **If `multi_year` is False (Single Year Analysis):**
+        *   `municipality_differences` (list[dict]): A list of dictionaries, one per municipality with data, containing `municipality_id`, `municipality_name`, `kpi1_value`, `kpi2_value`, and `difference`. Sorted by difference.
+        *   `top_difference_municipalities` (list[dict]): Top N municipalities with the largest positive difference (KPI2 > KPI1).
+        *   `bottom_difference_municipalities` (list[dict]): Top N municipalities with the largest negative difference (KPI1 > KPI2).
+        *   `median_difference_municipalities` (list[dict]): N municipalities around the median difference.
+    *   **If `multi_year` is True (Multi-Year Analysis):**
+        *   `municipality_correlations` (list[dict]): A list of dictionaries, one per municipality with sufficient data, containing `municipality_id`, `municipality_name`, `correlation` (the within-municipality time-series correlation), `years_used`, and `n_years`. Sorted by correlation.
+        *   `top_correlation_municipalities` (list[dict]): Top N municipalities with the highest positive correlation.
+        *   `bottom_correlation_municipalities` (list[dict]): Top N municipalities with the lowest (most negative) correlation.
+        *   `median_correlation_municipalities` (list[dict]): N municipalities around the median correlation.
+    *   `error` (str, optional): If an error occurred (e.g., API fetch failed, no overlapping data found), this key will contain an error message.
+
+    **Important Notes:**
+    *   This tool makes **live calls to the Kolada API** (potentially two separate calls for the data), which might take some time.
+    *   Ensure you provide valid `kpi1_id` and `kpi2_id`.
+    *   The analysis depends on data availability in Kolada for the selected KPIs, years, gender, and municipalities. Lack of overlapping data can lead to empty results or `None` for correlations.
+    *   For multi-year analysis, a municipality is only included in the `municipality_correlations` list if it has data for *both* KPIs in at least *two* common years within the specified range.
     """
     kpi1_meta: KoladaKpi | dict[str, str] = await get_kpi_metadata(kpi1_id, ctx)
     kpi2_meta: KoladaKpi | dict[str, str] = await get_kpi_metadata(kpi2_id, ctx)
