@@ -7,7 +7,6 @@ from config import BASE_URL
 from models.types import KoladaKpi, KoladaLifespanContext, KoladaMunicipality
 from services.api import fetch_data_from_kolada
 from services.data_processing import (
-    build_flat_list_of_municipalities,
     build_flat_list_of_municipalities_with_delta,
     fetch_and_group_data_by_municipality,
     parse_years_param,
@@ -29,7 +28,7 @@ async def fetch_kolada_data(
     Kolada Key Performance Indicator (KPI) within a single designated Swedish
     municipality or region. It allows specifying particular years or retrieving
     all available historical data points for that specific KPI/municipality pair.
-    
+
     The municipality_id parameter can be a comma-separated string to fetch data for
     multiple municipalities in a single request.
 
@@ -144,7 +143,7 @@ async def analyze_kpi_across_municipalities(
     KPI's value. If multiple years are provided, it also calculates and ranks
     the change (delta) in the KPI value over the specified period for each
     municipality.
-    
+
     If municipality_ids is provided, only those specific municipalities will be analyzed
     and no ranking (top, bottom, or median) is computed. A flat list of results is returned instead.
 
@@ -245,6 +244,7 @@ async def analyze_kpi_across_municipalities(
     year_list: list[str] = parse_years_param(year)
 
     from tools.url_builders import build_kolada_url_for_kpi
+
     url: str = build_kolada_url_for_kpi(BASE_URL, kpi_id, municipality_ids, year)
 
     kolada_data: dict[str, Any] = await fetch_data_from_kolada(url)
@@ -279,9 +279,7 @@ async def analyze_kpi_across_municipalities(
     # If user specified municipality_ids, skip ranking and return flat list
     if municipality_ids:
         result_list = build_flat_list_of_municipalities_with_delta(
-            filtered_municipality_data,
-            municipality_map,
-            year_list
+            filtered_municipality_data, municipality_map, year_list
         )
         return {
             "kpi_info": kpi_metadata,
@@ -289,7 +287,7 @@ async def analyze_kpi_across_municipalities(
             "selected_gender": gender,
             "only_return_rate": only_return_rate,
             "municipalities_count": len(result_list),
-            "municipalities_data": result_list
+            "municipalities_data": result_list,
         }
     else:
         return process_kpi_data(

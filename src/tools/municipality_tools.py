@@ -1,10 +1,12 @@
 from mcp.server.fastmcp.server import Context
-from utils.context import safe_get_lifespan_context  # type: ignore[Context]
+
 from models.types import KoladaLifespanContext, KoladaMunicipality
+from utils.context import safe_get_lifespan_context  # type: ignore[Context]
+
 
 async def list_municipalities(
     ctx: Context,  # type: ignore[Context]
-    municipality_type: str = "K"
+    municipality_type: str = "K",
 ) -> list[dict[str, str]]:
     """
     **Purpose:** Returns a list of all municipalities or regions in the system,
@@ -37,15 +39,17 @@ async def list_municipalities(
     lifespan_ctx: KoladaLifespanContext | None = safe_get_lifespan_context(ctx)
     if not lifespan_ctx:
         return [{"error": "Server context invalid or incomplete."}]
-    
-    municipality_map: dict[str, KoladaMunicipality] = lifespan_ctx.get("municipality_map", {})
-    result = []
+
+    municipality_map: dict[str, KoladaMunicipality] = lifespan_ctx.get(
+        "municipality_map", {}
+    )
+    result: list[dict[str, str]] = []
     for m_id, muni in municipality_map.items():
         # If municipality_type is provided (default "K"), match only those; allow empty string to mean "no filtering"
         if municipality_type and muni.get("type") != municipality_type:
             continue
         result.append({"id": m_id, "name": muni.get("title", f"Municipality {m_id}")})
-    
+
     # Sort by municipality ID
     result.sort(key=lambda x: x["id"])
     return result
