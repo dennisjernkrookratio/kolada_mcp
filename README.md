@@ -10,6 +10,15 @@ The **Kolada MCP Server** enables seamless integration between Large Language Mo
 
 Kolada MCP server acts as an intelligent middleware between LLM-based applications and the Kolada database, allowing users to easily query and analyze data related to Swedish municipalities and regions. With semantic search capabilities and robust analysis tools, the Kolada MCP Server significantly simplifies the task of navigating and interpreting the vast array of KPIs available in Kolada.
 
+## Example Usage
+
+Try asking the Kolada MCP Server open questions that will require autonomous reasoning and data analysis, such as:
+
+- Where in Sweden should a family move to find affordable housing, good schools and good healthcare?
+- Investigate the connection between unemployment and mental illness in Västernorrland
+- Where has the satisfaction with kindergarten increased the most in Sweden in the last five years?
+- Prepare an interactive dashboard to visualize the characteristics of the municipalities in Sweden with the best and worst public transportation systems, among municipalities with a population over 25,000.
+
 ## Features
 
 - **Semantic Search**: Find KPIs based on natural language descriptions.
@@ -76,6 +85,10 @@ Then open the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 
 ## Claude Desktop
 
+To add the Kolada MCP server to Claude Desktop, follow these steps:
+
+1. Open the `claude_desktop_config.json` config file. It can be found by opening settings in Claude Desktop and navigating to the Developer tab and clicking the Config button.
+2. Add the following configuration to the `mcpServers` section:
 
 ``` json
 {
@@ -84,13 +97,15 @@ Then open the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
         "command": "uv",
         "args": [
             "--directory",
-            "[path to kolada-mcp directory]",
+            "[path to kolada-mcp directory]/src",
             "run",
-            "kolada-mcp.py"
+            "server.py"
         ]
         }
     }
 }
+
+Restart Claude Desktop to use the Kolada MCP server tools.
 ```
 
 
@@ -101,9 +116,8 @@ We welcome contributions! Report issues, suggest enhancements, or submit pull re
 
 ## Disclaimer
 
-Kolada MCP Server is independently developed and maintained. It is not officially endorsed by, affiliated with, or related to the Council for the Promotion of Municipal Analysis (RKA) or any governmental body.
+Kolada MCP Server is independently developed and maintained. It is not officially endorsed by, affiliated with, or related to "Rådet för främjande av kommunala analyser" (RKA) or any other organization.
 
 ## License
 
 Kolada MCP Server is released under the [Apache License 2.0](LICENSE).
-

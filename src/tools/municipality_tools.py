@@ -1,9 +1,10 @@
-from mcp.server.fastmcp.server import Context
 from typing import Any
 
+from mcp.server.fastmcp.server import Context
+
 from models.types import KoladaLifespanContext, KoladaMunicipality
+from tools.data_tools import fetch_kolada_data  # type: ignore[Context]
 from utils.context import safe_get_lifespan_context  # type: ignore[Context]
-from tools.data_tools import fetch_kolada_data
 
 
 async def list_municipalities(
@@ -64,7 +65,7 @@ async def filter_municipalities_by_kpi(
     operator: str = "above",
     year: str | None = None,
     municipality_type: str = "K",
-    gender: str = "T"
+    gender: str = "T",
 ) -> list[dict[str, Any]]:
     """
     **Purpose:** Returns a list of municipalities for which the specified KPI value is
@@ -96,7 +97,9 @@ async def filter_municipalities_by_kpi(
     if not lifespan_ctx:
         return [{"error": "Server context invalid or incomplete."}]
 
-    municipality_map: dict[str, dict] = lifespan_ctx.get("municipality_map", {})
+    municipality_map: dict[str, dict[str, Any]] = lifespan_ctx.get(
+        "municipality_map", {}
+    )
     # Filter municipality IDs by provided type (or include all if empty)
     filtered_muni_ids = [
         m_id
@@ -109,14 +112,16 @@ async def filter_municipalities_by_kpi(
     muni_ids_str = ",".join(filtered_muni_ids)
 
     # Fetch KPI data for these municipalities.
-    data_response = await fetch_kolada_data(kpi_id=kpi_id, municipality_id=muni_ids_str, ctx=ctx, year=year)
+    data_response = await fetch_kolada_data(
+        kpi_id=kpi_id, municipality_id=muni_ids_str, ctx=ctx, year=year
+    )
     if "error" in data_response:
         return [data_response]
 
     values_list = data_response.get("values", [])
 
     # Organize results by municipality.
-    muni_data: dict[str, dict] = {}
+    muni_data: dict[str, dict[str, Any]] = {}
     if year:
         # Use only records matching the specified year.
         for rec in values_list:
@@ -157,14 +162,18 @@ async def filter_municipalities_by_kpi(
             include = True
         if include:
             diff = val_float - cutoff
-            results.append({
-                "municipality_id": m_id,
-                "municipality_name": municipality_map.get(m_id, {}).get("title", f"Municipality {m_id}"),
-                "period": rec.get("period"),
-                "value": val_float,
-                "cutoff": cutoff,
-                "difference": diff,
-            })
+            results.append(
+                {
+                    "municipality_id": m_id,
+                    "municipality_name": municipality_map.get(m_id, {}).get(
+                        "title", f"Municipality {m_id}"
+                    ),
+                    "period": rec.get("period"),
+                    "value": val_float,
+                    "cutoff": cutoff,
+                    "difference": diff,
+                }
+            )
 
     results.sort(key=lambda x: x["municipality_id"])
     return results
