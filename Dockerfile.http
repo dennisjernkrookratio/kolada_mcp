@@ -1,0 +1,19 @@
+# Dockerfile för HTTP-server (ChatGPT-kompatibel)
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+WORKDIR /app
+
+# Kopiera projektfiler
+COPY pyproject.toml .
+COPY README.md .
+COPY LICENSE .
+COPY src/ ./src/
+
+# Installera dependencies
+RUN uv sync --frozen
+
+# Exponera port
+EXPOSE 8000
+
+# Starta HTTP-server
+CMD ["uv", "run", "kolada-mcp-http"]

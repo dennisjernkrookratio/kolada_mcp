@@ -1,8 +1,6 @@
-
-from . import server
-import asyncio
-
 def main():
-    asyncio.run(server.main())
+    """Entry point for kolada-mcp stdio server"""
+    from kolada_mcp.server import main as server_main
+    server_main()
 
-__all__ = ['main', 'server']
+__all__ = ['main']

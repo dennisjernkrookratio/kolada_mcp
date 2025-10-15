@@ -44,12 +44,23 @@ uv sync
 ```
 
 ## Running Locally for Development
+
+### MCP Development (Claude Desktop)
 Start the server locally:
 
 ```bash
 uv run mcp dev server.py
 ```
 Open [MCP Inspector](https://github.com/modelcontextprotocol/inspector) at `http://localhost:5173` to test and debug.
+
+### HTTP Server (ChatGPT Integration)
+Start the HTTP server for ChatGPT integration:
+
+```bash
+uv run kolada-mcp-http
+```
+
+The server will be available at `http://localhost:8000`. See [CHATGPT_SETUP.md](CHATGPT_SETUP.md) for detailed ChatGPT integration instructions.
 
 ## Claude Desktop Integration
 
