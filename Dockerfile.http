@@ -12,8 +12,12 @@ COPY src/ ./src/
 # Installera dependencies
 RUN uv sync --frozen
 
-# Exponera port
-EXPOSE 8000
+# Railway exponerar PORT som environment variable
+# Vi behöver sätta den till 8001 som vår app förväntar sig
+ENV PORT=8001
+
+# Exponera port (Railway använder $PORT automatiskt)
+EXPOSE $PORT
 
 # Starta HTTP-server
 CMD ["uv", "run", "kolada-mcp-http"]
