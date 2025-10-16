@@ -124,9 +124,16 @@ def create_server():
                 
                 rows.sort(key=lambda x: x["year"])
                 
+                # Build a result compatible with search UI expectations
+                title = f"Meritvärde åk 9 – {municipality_name} ({kpi_id})"
+                text_snippet = ", ".join(f"{r['year']}={r['value']}" for r in rows[-5:]) or "Inga värden"
                 result = {
+                    "id": f"{kpi_id}:{muni_id}",
+                    "title": title,
+                    "text": f"Tidsserie ({len(rows)} punkter). Senaste: {text_snippet}.",
+                    "url": f"https://www.kolada.se/verktyg/fri-sokning/?kpis={kpi_id}",
+                    # Extra payload (not required, but useful):
                     "kpi_id": kpi_id,
-                    "name": f"Time series for KPI {kpi_id}",
                     "municipality_id": muni_id,
                     "municipality_name": municipality_name,
                     "rows": rows
@@ -201,9 +208,13 @@ def create_server():
                             pass
                         
                         if rows:
+                            text_snippet = ", ".join(f"{r['year']}={r['value']}" for r in rows[-5:]) or "Inga värden"
                             results.append({
+                                "id": f"{kpi_id}:{muni_id}",
+                                "title": f"{kpi_title} – {muni_name} ({kpi_id})",
+                                "text": f"Tidsserie ({len(rows)} punkter). Senaste: {text_snippet}.",
+                                "url": f"https://www.kolada.se/verktyg/fri-sokning/?kpis={kpi_id}",
                                 "kpi_id": kpi_id,
-                                "name": kpi_title,
                                 "municipality_id": muni_id,
                                 "municipality_name": muni_name,
                                 "rows": rows
@@ -329,9 +340,13 @@ def create_server():
                         rows.sort(key=lambda x: x["year"], reverse=True)
                         
                         if rows:
+                            text_snippet = ", ".join(f"{r['year']}={r['value']}" for r in rows[-5:]) or "Inga värden"
                             results.append({
+                                "id": f"{kpi_id}:{muni_id}",
+                                "title": f"{kpi_name} – {muni_name} ({kpi_id})",
+                                "text": f"Tidsserie ({len(rows)} punkter). Senaste: {text_snippet}.",
+                                "url": f"https://www.kolada.se/verktyg/fri-sokning/?kpis={kpi_id}",
                                 "kpi_id": kpi_id,
-                                "name": kpi_name,
                                 "municipality_id": muni_id,
                                 "municipality_name": muni_name,
                                 "rows": rows
