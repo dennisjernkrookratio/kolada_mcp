@@ -17,8 +17,7 @@ from typing import Dict, List, Any
 from fastmcp import FastMCP
 
 # Import existing Kolada functionality
-from kolada_mcp.tools.data_tools import search_kpis as kolada_search_kpis
-from kolada_mcp.tools.metadata_tools import get_kpi_metadata
+from kolada_mcp.tools.metadata_tools import search_kpis as kolada_search_kpis, get_kpi_metadata
 from kolada_mcp.services.api import fetch_kpi_data
 
 # Configure logging
