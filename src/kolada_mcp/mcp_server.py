@@ -12,9 +12,10 @@ According to OpenAI's specification:
 import logging
 import os
 import json
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Annotated
 
 from fastmcp import FastMCP
+from fastmcp.utilities.dependencies import deps_ctx
 from mcp.server.fastmcp.server import Context
 
 # Import existing Kolada functionality
@@ -44,7 +45,7 @@ def create_server():
     )
 
     @mcp.tool()
-    async def search(query: str, ctx: Context) -> Dict[str, List[Dict[str, Any]]]:
+    async def search(query: str, ctx: Annotated[Context, deps_ctx()]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Search for Swedish municipal Key Performance Indicators (KPIs) from Kolada.
         
@@ -99,7 +100,7 @@ def create_server():
             return {"results": []}
 
     @mcp.tool()
-    async def fetch(id: str, ctx: Context) -> Dict[str, Any]:
+    async def fetch(id: str, ctx: Annotated[Context, deps_ctx()]) -> Dict[str, Any]:
         """
         Retrieve complete KPI information and statistics by ID.
         
