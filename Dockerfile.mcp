@@ -1,0 +1,32 @@
+# Dockerfile för MCP Server med SSE transport (Deep Research)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Installera system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Kopiera requirements först för bättre caching
+COPY pyproject.toml .
+COPY README.md .
+COPY LICENSE .
+
+# Installera uv
+RUN pip install --no-cache-dir uv
+
+# Kopiera source kod
+COPY src/ ./src/
+
+# Installera dependencies med uv
+RUN uv pip install --system --no-cache -e .
+
+# Cloud Run sätter PORT environment variable
+ENV PORT=8000
+
+# Exponera port
+EXPOSE 8000
+
+# Starta MCP-server med SSE transport
+CMD ["python", "-m", "kolada_mcp.mcp_server"]

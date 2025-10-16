@@ -35,4 +35,5 @@ include-package-data = true
 [project.scripts]
 kolada-mcp = "kolada_mcp.server:main"
 kolada-mcp-http = "kolada_mcp.http_server:main"
+kolada-mcp-sse = "kolada_mcp.mcp_server:main"
 
