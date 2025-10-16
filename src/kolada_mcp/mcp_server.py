@@ -18,7 +18,6 @@ from fastmcp import FastMCP
 
 # Import existing Kolada functionality
 from kolada_mcp.tools.metadata_tools import search_kpis as kolada_search_kpis, get_kpi_metadata
-from kolada_mcp.services.api import fetch_kpi_data
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -127,26 +126,8 @@ def create_server():
             if not metadata:
                 raise ValueError(f"KPI {id} not found")
             
-            # Get recent data for major municipalities
-            major_municipalities = [
-                "0180",  # Stockholm
-                "1480",  # Göteborg
-                "1280",  # Malmö
-                "0380",  # Uppsala
-                "1381",  # Linköping
-            ]
-            
-            try:
-                # Fetch recent data (last 3 years)
-                data_result = await fetch_kpi_data(
-                    kpi_id=id,
-                    municipality_ids=major_municipalities,
-                    years=[2023, 2022, 2021]
-                )
-                statistics_text = f"\n\nRecent statistics:\n{json.dumps(data_result, indent=2, ensure_ascii=False)}"
-            except Exception as e:
-                logger.warning(f"Could not fetch statistics for {id}: {e}")
-                statistics_text = "\n\nNote: Historical statistics are available via separate queries."
+            # Note: Historical statistics would require separate API calls
+            statistics_text = "\n\nNote: Historical statistics are available via separate queries."
             
             # Build complete document text
             title = metadata.get('title', f'KPI {id}')
