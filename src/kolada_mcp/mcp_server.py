@@ -18,6 +18,7 @@ from fastmcp import FastMCP, Context
 
 # Import existing Kolada functionality
 from kolada_mcp.tools.metadata_tools import search_kpis as kolada_search_kpis, get_kpi_metadata
+from kolada_mcp.tools.data_tools import fetch_kolada_data
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -173,6 +174,123 @@ Data Source: Kolada (Swedish Association of Local Authorities and Regions)
         except Exception as e:
             logger.error(f"Error in MCP fetch: {e}")
             raise ValueError(f"Could not fetch KPI {id}: {str(e)}")
+
+    @mcp.tool()
+    async def timeseries(
+        kpi_id: str, 
+        municipality_id: str, 
+        ctx: Context,
+        years: str | None = None
+    ) -> Dict[str, Any]:
+        """
+        Fetch time series data for a specific KPI and municipality.
+        
+        This tool retrieves historical data points for a Key Performance Indicator
+        across one or more years for a specific Swedish municipality. Use this after
+        finding relevant KPIs with search to get actual statistics over time.
+
+        Args:
+            kpi_id: KPI identifier from Kolada (e.g., "N00941", "N02387")
+            municipality_id: Municipality code (e.g., "0180" for Stockholm, 
+                           "0188" for Norrtälje). Use 4 digits with leading zero.
+            years: Optional year range (e.g., "2019-2023" or "2020,2021,2022").
+                   If omitted, fetches all available years.
+
+        Returns:
+            Dictionary with time series data including years and values, plus
+            metadata about the KPI and municipality.
+
+        Examples:
+            - Get latest 5 years: timeseries("N02387", "0188", years="2019-2023")
+            - Get specific years: timeseries("N02348", "0188", years="2020,2022,2023")
+            - Get all available: timeseries("N00941", "0180")
+        """
+        logger.info(f"MCP timeseries request: KPI={kpi_id}, Municipality={municipality_id}, Years={years}")
+        
+        try:
+            # Parse years parameter
+            year_param = None
+            if years:
+                # Handle range format "2019-2023"
+                if "-" in years:
+                    start, end = years.split("-")
+                    year_list = [str(y) for y in range(int(start), int(end) + 1)]
+                    year_param = ",".join(year_list)
+                else:
+                    # Handle comma-separated "2020,2021,2022"
+                    year_param = years
+            
+            logger.info(f"Calling fetch_kolada_data with year_param={year_param}")
+            
+            # Fetch data using existing tool
+            data = await fetch_kolada_data(
+                kpi_id=kpi_id,
+                municipality_id=municipality_id,
+                ctx=ctx,
+                year=year_param,
+                municipality_type="K"
+            )
+            
+            if "error" in data:
+                logger.error(f"Error from fetch_kolada_data: {data['error']}")
+                return {"error": data["error"], "kpi_id": kpi_id, "municipality_id": municipality_id}
+            
+            # Extract time series from response
+            values_list = data.get("values", [])
+            logger.info(f"Received {len(values_list)} value entries")
+            
+            if not values_list:
+                return {
+                    "kpi_id": kpi_id,
+                    "municipality_id": municipality_id,
+                    "municipality_name": "Unknown",
+                    "rows": [],
+                    "message": "No data available for the specified parameters"
+                }
+            
+            # Build compact time series
+            rows = []
+            municipality_name = "Unknown"
+            
+            for entry in values_list:
+                municipality_name = entry.get("municipality_name", municipality_name)
+                period = entry.get("period")
+                
+                # Extract values (handle gender breakdown)
+                for value_item in entry.get("values", []):
+                    gender = value_item.get("gender", "T")
+                    value = value_item.get("value")
+                    
+                    # Default to "T" (total) gender unless specified
+                    if gender == "T" and value is not None:
+                        rows.append({
+                            "year": period,
+                            "value": value,
+                            "gender": gender
+                        })
+            
+            # Sort by year
+            rows.sort(key=lambda x: x["year"])
+            
+            logger.info(f"Returning {len(rows)} data points for {municipality_name}")
+            
+            result = {
+                "kpi_id": kpi_id,
+                "municipality_id": municipality_id,
+                "municipality_name": municipality_name,
+                "rows": rows,
+                "count": len(rows)
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in timeseries: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "kpi_id": kpi_id,
+                "municipality_id": municipality_id
+            }
 
     return mcp
 
