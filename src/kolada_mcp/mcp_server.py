@@ -509,7 +509,7 @@ Data Source: Kolada (Swedish Association of Local Authorities and Regions)
             # Fetch data using existing tool
             data = await fetch_kolada_data(
                 kpi_id=kpi_id,
-                municipality_id=municipality_id,
+                municipality_id=muni_id,
                 ctx=ctx,
                 year=year_param,
                 municipality_type="K"
@@ -517,7 +517,7 @@ Data Source: Kolada (Swedish Association of Local Authorities and Regions)
             
             if "error" in data:
                 logger.error(f"Error from fetch_kolada_data: {data['error']}")
-                return {"error": data["error"], "kpi_id": kpi_id, "municipality_id": municipality_id}
+                return {"error": data["error"], "kpi_id": kpi_id, "municipality_id": muni_id}
             
             # Extract time series from response
             values_list = data.get("values", [])
@@ -526,7 +526,7 @@ Data Source: Kolada (Swedish Association of Local Authorities and Regions)
             if not values_list:
                 return {
                     "kpi_id": kpi_id,
-                    "municipality_id": municipality_id,
+                    "municipality_id": muni_id,
                     "municipality_name": "Unknown",
                     "rows": [],
                     "message": "No data available for the specified parameters"
@@ -560,7 +560,7 @@ Data Source: Kolada (Swedish Association of Local Authorities and Regions)
             
             result = {
                 "kpi_id": kpi_id,
-                "municipality_id": municipality_id,
+                "municipality_id": muni_id,
                 "municipality_name": municipality_name,
                 "rows": rows,
                 "count": len(rows)
@@ -573,7 +573,7 @@ Data Source: Kolada (Swedish Association of Local Authorities and Regions)
             return {
                 "error": str(e),
                 "kpi_id": kpi_id,
-                "municipality_id": municipality_id
+                "municipality_id": muni_id
             }
 
     return mcp
