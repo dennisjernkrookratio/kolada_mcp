@@ -15,6 +15,7 @@ import json
 from typing import Dict, List, Any
 
 from fastmcp import FastMCP
+from mcp.server.fastmcp.server import Context
 
 # Import existing Kolada functionality
 from kolada_mcp.tools.metadata_tools import search_kpis as kolada_search_kpis, get_kpi_metadata
@@ -43,7 +44,7 @@ def create_server():
     )
 
     @mcp.tool()
-    async def search(query: str, ctx: mcp.Context) -> Dict[str, List[Dict[str, Any]]]:
+    async def search(query: str, ctx: Context) -> Dict[str, List[Dict[str, Any]]]:
         """
         Search for Swedish municipal Key Performance Indicators (KPIs) from Kolada.
         
@@ -98,7 +99,7 @@ def create_server():
             return {"results": []}
 
     @mcp.tool()
-    async def fetch(id: str, ctx: mcp.Context) -> Dict[str, Any]:
+    async def fetch(id: str, ctx: Context) -> Dict[str, Any]:
         """
         Retrieve complete KPI information and statistics by ID.
         
