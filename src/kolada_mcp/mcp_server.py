@@ -43,7 +43,7 @@ def create_server():
     )
 
     @mcp.tool()
-    async def search(query: str) -> Dict[str, List[Dict[str, Any]]]:
+    async def search(query: str, ctx: mcp.Context) -> Dict[str, List[Dict[str, Any]]]:
         """
         Search for Swedish municipal Key Performance Indicators (KPIs) from Kolada.
         
@@ -61,13 +61,16 @@ def create_server():
             Each result includes id, title, brief description, and URL.
         """
         if not query or not query.strip():
+            logger.warning("Empty query received")
             return {"results": []}
         
         logger.info(f"MCP search request for query: '{query}'")
         
         try:
             # Use existing Kolada search functionality
-            search_results = await kolada_search_kpis(query=query, top_k=10)
+            logger.info(f"Calling kolada_search_kpis with query='{query}', top_k=10")
+            search_results = await kolada_search_kpis(keyword=query, ctx=ctx, limit=10)
+            logger.info(f"kolada_search_kpis returned {len(search_results)} results")
             
             # Transform to OpenAI's required format
             results = []
@@ -95,7 +98,7 @@ def create_server():
             return {"results": []}
 
     @mcp.tool()
-    async def fetch(id: str) -> Dict[str, Any]:
+    async def fetch(id: str, ctx: mcp.Context) -> Dict[str, Any]:
         """
         Retrieve complete KPI information and statistics by ID.
         
@@ -115,15 +118,19 @@ def create_server():
             ValueError: If the specified KPI ID is not found
         """
         if not id:
+            logger.error("fetch called without KPI ID")
             raise ValueError("KPI ID is required")
         
         logger.info(f"MCP fetch request for KPI ID: {id}")
         
         try:
             # Get KPI metadata
-            metadata = await get_kpi_metadata(kpi_id=id)
+            logger.info(f"Calling get_kpi_metadata for id={id}")
+            metadata = await get_kpi_metadata(kpi_id=id, ctx=ctx)
+            logger.info(f"get_kpi_metadata returned: {bool(metadata)}")
             
             if not metadata:
+                logger.error(f"KPI {id} not found in metadata")
                 raise ValueError(f"KPI {id} not found")
             
             # Note: Historical statistics would require separate API calls
