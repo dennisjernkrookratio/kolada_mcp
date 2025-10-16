@@ -50,16 +50,22 @@ def create_server():
         
         This tool searches through 6000+ KPIs to find semantically relevant matches
         using AI embeddings. Returns a list of search results with basic information.
-        Use the fetch tool to get complete KPI details and statistics.
+        
+        SPECIAL COMMANDS for time series data:
+        - Format: "ts:kpi=<ID>;muni=<CODE>;years=<RANGE>"
+        - Example: "ts:kpi=N02387;muni=0188;years=2019-2023"
+        - Or natural language: "Norrtälje skolresultat senaste 5 åren"
 
         Args:
             query: Search query string in Swedish or English. Natural language
                    queries work best. Examples: "arbetslöshet", "utbildningsnivå",
                    "förskoleplats", "skatteintäkter"
+                   
+                   For time series: include municipality name + topic + years
 
         Returns:
-            Dictionary with 'results' key containing list of matching KPIs.
-            Each result includes id, title, brief description, and URL.
+            Dictionary with 'results' key containing list of matching KPIs
+            or time series data if pattern matches.
         """
         if not query or not query.strip():
             logger.warning("Empty query received")
@@ -67,6 +73,181 @@ def create_server():
         
         logger.info(f"MCP search request for query: '{query}'")
         
+        # Check for timeseries command pattern: "ts:kpi=XXX;muni=YYY;years=ZZZ"
+        import re
+        ts_match = re.match(r'ts:kpi=([^;]+);muni=([^;]+);years=(.+)', query.strip(), re.IGNORECASE)
+        
+        if ts_match:
+            kpi_id = ts_match.group(1).strip()
+            muni_id = ts_match.group(2).strip()
+            years = ts_match.group(3).strip()
+            
+            logger.info(f"Timeseries command detected: KPI={kpi_id}, Municipality={muni_id}, Years={years}")
+            
+            try:
+                # Parse years
+                year_param = None
+                if "-" in years:
+                    start, end = years.split("-")
+                    year_list = [str(y) for y in range(int(start), int(end) + 1)]
+                    year_param = ",".join(year_list)
+                else:
+                    year_param = years
+                
+                # Fetch data
+                data = await fetch_kolada_data(
+                    kpi_id=kpi_id,
+                    municipality_id=muni_id,
+                    ctx=ctx,
+                    year=year_param,
+                    municipality_type="K"
+                )
+                
+                if "error" in data:
+                    return {"results": [], "error": data["error"]}
+                
+                # Extract time series
+                values_list = data.get("values", [])
+                rows = []
+                municipality_name = "Unknown"
+                
+                for entry in values_list:
+                    municipality_name = entry.get("municipality_name", municipality_name)
+                    period = entry.get("period")
+                    
+                    for value_item in entry.get("values", []):
+                        if value_item.get("gender") == "T" and value_item.get("value") is not None:
+                            rows.append({
+                                "year": period,
+                                "value": value_item.get("value")
+                            })
+                
+                rows.sort(key=lambda x: x["year"])
+                
+                result = {
+                    "kpi_id": kpi_id,
+                    "name": f"Time series for KPI {kpi_id}",
+                    "municipality_id": muni_id,
+                    "municipality_name": municipality_name,
+                    "rows": rows
+                }
+                
+                logger.info(f"Returning timeseries with {len(rows)} data points")
+                return {"results": [result]}
+                
+            except Exception as e:
+                logger.error(f"Error in timeseries command: {e}", exc_info=True)
+                return {"results": [], "error": str(e)}
+        
+        # Check for natural language pattern: "Norrtälje + skolresultat/meritvärde + senaste X år"
+        nl_match = re.search(
+            r'(norrtälje|stockholm|göteborg|malmö|uppsala).*(skolresultat|meritvärde|betyg|behörighet|godkända).*(senaste|sista)\s*(\d+)\s*(år|åren)',
+            query.lower()
+        )
+        
+        if nl_match:
+            municipality_name = nl_match.group(1)
+            topic = nl_match.group(2)
+            num_years = int(nl_match.group(4))
+            
+            logger.info(f"Natural language timeseries detected: {municipality_name} + {topic} + {num_years} years")
+            
+            # Map municipality names to codes
+            muni_codes = {
+                "norrtälje": "0188",
+                "stockholm": "0180",
+                "göteborg": "1480",
+                "malmö": "1280",
+                "uppsala": "0380"
+            }
+            
+            muni_id = muni_codes.get(municipality_name)
+            if not muni_id:
+                logger.warning(f"Unknown municipality: {municipality_name}")
+                return {"results": [], "error": f"Unknown municipality: {municipality_name}"}
+            
+            # Define relevant KPIs for school results
+            school_kpis = {
+                "meritvärde": "N00941",  # Meritvärde åk 9
+                "svenska": "N02387",      # Betygspoäng svenska åk 9
+                "engelska": "N02348",     # Betygspoäng engelska åk 9
+                "matematik": "N02391",    # Betygspoäng matematik åk 9
+                "behörighet": "N00956",   # Andel behöriga till gymnasiet
+            }
+            
+            # Determine which KPIs to fetch
+            kpi_ids = []
+            if "meritvärde" in topic:
+                kpi_ids = [("N00941", "Meritvärde åk 9")]
+            elif "behörighet" in topic or "behöriga" in topic:
+                kpi_ids = [("N00956", "Andel behöriga till gymnasiet")]
+            else:
+                # Fetch multiple school KPIs
+                kpi_ids = [
+                    ("N00941", "Meritvärde åk 9"),
+                    ("N02387", "Betygspoäng svenska åk 9"),
+                    ("N02348", "Betygspoäng engelska åk 9"),
+                    ("N02391", "Betygspoäng matematik åk 9"),
+                ]
+            
+            # Calculate year range
+            from datetime import datetime
+            current_year = datetime.now().year
+            start_year = current_year - num_years
+            years_str = f"{start_year}-{current_year - 1}"
+            
+            logger.info(f"Fetching {len(kpi_ids)} KPIs for {municipality_name} ({muni_id}), years {years_str}")
+            
+            # Fetch data for each KPI
+            results = []
+            for kpi_id, kpi_name in kpi_ids:
+                try:
+                    year_list = [str(y) for y in range(start_year, current_year)]
+                    year_param = ",".join(year_list)
+                    
+                    data = await fetch_kolada_data(
+                        kpi_id=kpi_id,
+                        municipality_id=muni_id,
+                        ctx=ctx,
+                        year=year_param,
+                        municipality_type="K"
+                    )
+                    
+                    if "error" not in data:
+                        values_list = data.get("values", [])
+                        rows = []
+                        muni_name = "Unknown"
+                        
+                        for entry in values_list:
+                            muni_name = entry.get("municipality_name", muni_name)
+                            period = entry.get("period")
+                            
+                            for value_item in entry.get("values", []):
+                                if value_item.get("gender") == "T" and value_item.get("value") is not None:
+                                    rows.append({
+                                        "year": period,
+                                        "value": value_item.get("value")
+                                    })
+                        
+                        rows.sort(key=lambda x: x["year"])
+                        
+                        if rows:
+                            results.append({
+                                "kpi_id": kpi_id,
+                                "name": kpi_name,
+                                "municipality_id": muni_id,
+                                "municipality_name": muni_name,
+                                "rows": rows
+                            })
+                
+                except Exception as e:
+                    logger.error(f"Error fetching KPI {kpi_id}: {e}")
+                    continue
+            
+            logger.info(f"Returning {len(results)} time series")
+            return {"results": results}
+        
+        # Default behavior: semantic KPI search
         try:
             # Use existing Kolada search functionality
             logger.info(f"Calling kolada_search_kpis with query='{query}', top_k=10")
