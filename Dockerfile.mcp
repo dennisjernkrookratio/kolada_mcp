@@ -22,11 +22,11 @@ COPY src/ ./src/
 # Installera dependencies med uv
 RUN uv pip install --system --no-cache -e .
 
-# Cloud Run sätter PORT environment variable
-ENV PORT=8000
+# Cloud Run sätter PORT environment variable (default 8080)
+ENV PORT=8080
 
 # Exponera port
-EXPOSE 8000
+EXPOSE 8080
 
 # Starta MCP-server med SSE transport
 CMD ["python", "-m", "kolada_mcp.mcp_server"]
