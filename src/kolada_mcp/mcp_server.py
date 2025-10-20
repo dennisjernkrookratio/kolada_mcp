@@ -606,54 +606,15 @@ def main():
     # Create the MCP server
     server = create_server()
     
-    # Configure and start the server with SSE transport
-    # FastMCP will mount on /sse, but we'll add /messages alias manually
+    # Use FastMCP's built-in run method with SSE transport
+    # FastMCP automatically creates endpoints - we can't easily add /messages alias
+    # So we'll use environment variable or FastMCP's default /sse
     try:
-        # FastMCP's run() creates a FastAPI app internally
-        # We need to patch it to add /messages endpoint
+        logger.info(f"✓ SSE endpoint will be available at /sse")
+        logger.info(f"Note: ChatGPT should connect to /sse endpoint")
         
-        import uvicorn
-        from fastapi import FastAPI, Request
-        from mcp.server.sse import SseServerTransport
-        
-        # Create our own FastAPI app
-        app = FastAPI(title="Kolada MCP Server")
-        
-        # Create SSE transport
-        sse = SseServerTransport("/sse")
-        
-        # Handler for SSE requests
-        async def sse_handler(request: Request):
-            async with sse.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
-                # Access FastMCP's underlying MCP server
-                mcp_server = server._mcp
-                await mcp_server.run(
-                    read_stream,
-                    write_stream,
-                    mcp_server.create_initialization_options()
-                )
-        
-        # Mount on both /sse (standard) and /messages (ChatGPT)
-        app.add_api_route("/sse", sse_handler, methods=["GET", "POST"])
-        app.add_api_route("/messages", sse_handler, methods=["GET", "POST"])
-        
-        # Health check
-        @app.get("/health")
-        def health():
-            return {
-                "status": "ok",
-                "service": "kolada-mcp-sse",
-                "endpoints": {
-                    "sse": "/sse",
-                    "messages": "/messages (ChatGPT alias)"
-                }
-            }
-        
-        logger.info(f"✓ SSE endpoint: /sse")
-        logger.info(f"✓ ChatGPT alias: /messages")
-        
-        # Start the server
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+        # Use FastMCP's built-in run method
+        server.run(transport="sse", host="0.0.0.0", port=port)
         
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
