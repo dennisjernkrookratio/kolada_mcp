@@ -633,12 +633,25 @@ def main():
     # Create the MCP server
     server = create_server()
     
-    # Use FastMCP's built-in run method with SSE transport
-    # FastMCP automatically creates endpoints - we can't easily add /messages alias
-    # So we'll use environment variable or FastMCP's default /sse
+    # Get access to the underlying ASGI app to add /messages route
+    from starlette.responses import RedirectResponse
+    from starlette.routing import Route
+    
+    async def messages_redirect(request):
+        """Redirect /messages to /sse for ChatGPT compatibility"""
+        logger.info(f"Redirecting /messages → /sse (query: {request.url.query})")
+        # Preserve query params (session_id etc)
+        return RedirectResponse(url=f"/sse?{request.url.query}", status_code=307)
+    
+    # Access FastMCP's internal app and add the route
+    if hasattr(server, '_app'):
+        # Add redirect route before starting server
+        server._app.routes.insert(0, Route("/messages", messages_redirect, methods=["GET", "POST"]))
+        logger.info("✓ Added /messages → /sse redirect for ChatGPT compatibility")
+    
     try:
-        logger.info(f"✓ SSE endpoint will be available at /sse")
-        logger.info(f"Note: ChatGPT should connect to /sse endpoint")
+        logger.info(f"✓ SSE endpoint available at /sse")
+        logger.info(f"✓ ChatGPT /messages endpoint redirects to /sse")
         
         # Use FastMCP's built-in run method
         server.run(transport="sse", host="0.0.0.0", port=port)
