@@ -71,18 +71,24 @@ def create_server():
             logger.warning("Empty query received")
             return {"results": []}
         
-        logger.info(f"MCP search request for query: '{query}'")
+        logger.info(f"🔍 MCP search request for query: '{query}'")
+        logger.info(f"📊 Query length: {len(query)}, stripped: '{query.strip()}'")
         
         # Check for timeseries command pattern: "ts:kpi=XXX;muni=YYY;years=ZZZ"
         import re
         ts_match = re.match(r'ts:kpi=([^;]+);muni=([^;]+);years=(.+)', query.strip(), re.IGNORECASE)
+        
+        logger.info(f"🔎 Pattern check - ts_match: {ts_match is not None}")
         
         if ts_match:
             kpi_id = ts_match.group(1).strip()
             muni_id = ts_match.group(2).strip()
             years = ts_match.group(3).strip()
             
-            logger.info(f"Timeseries command detected: KPI={kpi_id}, Municipality={muni_id}, Years={years}")
+            logger.info(f"✅ TIMESERIES COMMAND DETECTED!")
+            logger.info(f"   - KPI ID: {kpi_id}")
+            logger.info(f"   - Municipality ID: {muni_id}")
+            logger.info(f"   - Years: {years}")
             
             try:
                 # Parse years
@@ -94,6 +100,8 @@ def create_server():
                 else:
                     year_param = years
                 
+                logger.info(f"📡 Calling fetch_kolada_data with: kpi_id={kpi_id}, municipality_id={muni_id}, year={year_param}")
+                
                 # Fetch data
                 data = await fetch_kolada_data(
                     kpi_id=kpi_id,
@@ -103,7 +111,10 @@ def create_server():
                     municipality_type="K"
                 )
                 
+                logger.info(f"📥 Received data from Kolada API. Keys: {list(data.keys())}")
+                
                 if "error" in data:
+                    logger.error(f"❌ Kolada API returned error: {data['error']}")
                     return {"results": [], "error": data["error"]}
                 
                 # Extract time series
@@ -124,6 +135,9 @@ def create_server():
                 
                 rows.sort(key=lambda x: x["year"])
                 
+                logger.info(f"📈 Extracted {len(rows)} data points from API response")
+                logger.info(f"🏛️ Municipality name: {municipality_name}")
+                
                 # Build a result compatible with search UI expectations
                 title = f"Meritvärde åk 9 – {municipality_name} ({kpi_id})"
                 text_snippet = ", ".join(f"{r['year']}={r['value']}" for r in rows[-5:]) or "Inga värden"
@@ -136,10 +150,18 @@ def create_server():
                     "kpi_id": kpi_id,
                     "municipality_id": muni_id,
                     "municipality_name": municipality_name,
-                    "rows": rows
+                    "rows": rows,
+                    "count": len(rows)
                 }
                 
-                logger.info(f"Returning timeseries with {len(rows)} data points")
+                logger.info(f"✅ RETURNING RESULT:")
+                logger.info(f"   - ID: {result['id']}")
+                logger.info(f"   - Title: {result['title']}")
+                logger.info(f"   - Text: {result['text']}")
+                logger.info(f"   - URL: {result['url']}")
+                logger.info(f"   - Data points: {len(rows)}")
+                logger.info(f"📦 Full result structure: {list(result.keys())}")
+                
                 return {"results": [result]}
                 
             except Exception as e:
@@ -153,12 +175,17 @@ def create_server():
             re.IGNORECASE
         )
         
+        logger.info(f"🔎 Pattern check - multi_ts_match: {multi_ts_match is not None}")
+        
         if multi_ts_match:
             muni_id = multi_ts_match.group(1).strip()
             years = multi_ts_match.group(2).strip()
             kpis = [k.strip() for k in multi_ts_match.group(3).split(',')]
             
-            logger.info(f"Multi-KPI timeseries command: Municipality={muni_id}, Years={years}, KPIs={kpis}")
+            logger.info(f"✅ MULTI-KPI TIMESERIES COMMAND DETECTED!")
+            logger.info(f"   - Municipality ID: {muni_id}")
+            logger.info(f"   - Years: {years}")
+            logger.info(f"   - KPIs: {kpis}")
             
             # Parse years
             year_param = None
