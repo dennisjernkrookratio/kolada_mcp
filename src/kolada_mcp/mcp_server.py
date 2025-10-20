@@ -633,28 +633,36 @@ def main():
     # Create the MCP server
     server = create_server()
     
-    # Get access to the underlying ASGI app to add /messages route
+    # Create ASGI app manually to add /messages redirect
+    import uvicorn
+    from starlette.applications import Starlette
     from starlette.responses import RedirectResponse
-    from starlette.routing import Route
+    from starlette.routing import Route, Mount
+    from mcp.server.sse import SseServerTransport
     
     async def messages_redirect(request):
         """Redirect /messages to /sse for ChatGPT compatibility"""
         logger.info(f"Redirecting /messages → /sse (query: {request.url.query})")
-        # Preserve query params (session_id etc)
         return RedirectResponse(url=f"/sse?{request.url.query}", status_code=307)
     
-    # Access FastMCP's internal app and add the route
-    if hasattr(server, '_app'):
-        # Add redirect route before starting server
-        server._app.routes.insert(0, Route("/messages", messages_redirect, methods=["GET", "POST"]))
-        logger.info("✓ Added /messages → /sse redirect for ChatGPT compatibility")
+    # Get the SSE transport routes from FastMCP
+    sse_transport = SseServerTransport("/sse")
+    sse_app = sse_transport.get_server_app(server._mcp_server)
+    
+    # Create Starlette app with both /messages redirect and /sse endpoint
+    app = Starlette(
+        routes=[
+            Route("/messages", messages_redirect, methods=["GET", "POST"]),
+            Mount("/sse", app=sse_app),
+        ]
+    )
     
     try:
         logger.info(f"✓ SSE endpoint available at /sse")
-        logger.info(f"✓ ChatGPT /messages endpoint redirects to /sse")
+        logger.info(f"✓ /messages redirects to /sse for ChatGPT compatibility")
         
-        # Use FastMCP's built-in run method
-        server.run(transport="sse", host="0.0.0.0", port=port)
+        # Run with Uvicorn directly
+        uvicorn.run(app, host="0.0.0.0", port=port)
         
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
