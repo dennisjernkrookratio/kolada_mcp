@@ -607,9 +607,54 @@ def main():
     server = create_server()
     
     # Configure and start the server with SSE transport
+    # FastMCP will mount on /sse, but we'll add /messages alias manually
     try:
-        # Use FastMCP's built-in run method with SSE transport
-        server.run(transport="sse", host="0.0.0.0", port=port)
+        # FastMCP's run() creates a FastAPI app internally
+        # We need to patch it to add /messages endpoint
+        
+        import uvicorn
+        from fastapi import FastAPI, Request
+        from mcp.server.sse import SseServerTransport
+        
+        # Create our own FastAPI app
+        app = FastAPI(title="Kolada MCP Server")
+        
+        # Create SSE transport
+        sse = SseServerTransport("/sse")
+        
+        # Handler for SSE requests
+        async def sse_handler(request: Request):
+            async with sse.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
+                # Access FastMCP's underlying MCP server
+                mcp_server = server._mcp
+                await mcp_server.run(
+                    read_stream,
+                    write_stream,
+                    mcp_server.create_initialization_options()
+                )
+        
+        # Mount on both /sse (standard) and /messages (ChatGPT)
+        app.add_api_route("/sse", sse_handler, methods=["GET", "POST"])
+        app.add_api_route("/messages", sse_handler, methods=["GET", "POST"])
+        
+        # Health check
+        @app.get("/health")
+        def health():
+            return {
+                "status": "ok",
+                "service": "kolada-mcp-sse",
+                "endpoints": {
+                    "sse": "/sse",
+                    "messages": "/messages (ChatGPT alias)"
+                }
+            }
+        
+        logger.info(f"✓ SSE endpoint: /sse")
+        logger.info(f"✓ ChatGPT alias: /messages")
+        
+        # Start the server
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+        
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
     except Exception as e:
