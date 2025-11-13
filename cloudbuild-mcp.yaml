@@ -1,5 +1,0 @@
-steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/kolada-mcp-prod/kolada-mcp-sse', '-f', 'Dockerfile.mcp', '.']
-images:
-  - 'gcr.io/kolada-mcp-prod/kolada-mcp-sse'

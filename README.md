@@ -1,19 +1,35 @@
-# Kolada MCP Server
+# Kolada MCP Server# Kolada MCP Server
 
-[![https://modelcontextprotocol.io](https://badge.mcpx.dev?type=server 'MCP Server')](https://modelcontextprotocol.io)
 
-**Kolada MCP Server** enables seamless integration between Large Language Models (LLMs) and [Kolada](https://www.kolada.se/), Sweden’s comprehensive municipal and regional statistical database. It provides structured access to thousands of Key Performance Indicators (KPIs), facilitating rich, data-driven analysis, comparisons, and explorations of public sector statistics.
 
-## Overview
+Model Context Protocol (MCP) server exposing Sweden's Kolada open data using the [`koladapy`](https://github.com/xemarap/koladapy) client. The server provides search and retrieval helpers suitable for Deep Research and other MCP-compatible clients.[![https://modelcontextprotocol.io](https://badge.mcpx.dev?type=server 'MCP Server')](https://modelcontextprotocol.io)
+
+
+
+## Features**Kolada MCP Server** enables seamless integration between Large Language Models (LLMs) and [Kolada](https://www.kolada.se/), Sweden’s comprehensive municipal and regional statistical database. It provides structured access to thousands of Key Performance Indicators (KPIs), facilitating rich, data-driven analysis, comparisons, and explorations of public sector statistics.
+
+- Discover KPIs and municipalities via semantic and keyword search
+
+- Fetch detailed metric values from Kolada's REST API## Overview
+
+- Built on `fastmcp` for straightforward SSE deployment
 
 Kolada MCP Server acts as intelligent middleware between LLM-based applications and the Kolada database, allowing easy querying and analyzing of data related to Swedish municipalities and regions. With semantic search capabilities and robust analysis tools, Kolada MCP significantly simplifies navigating and interpreting the vast array of KPIs in Kolada.
 
-## Example Queries
+## Quick start
 
-Ask Kolada MCP Server complex questions requiring data analysis:
-- Where in Sweden should a family move to find affordable housing, good schools, and healthcare?
+```bash## Example Queries
+
+pip install .
+
+kolada-mcpAsk Kolada MCP Server complex questions requiring data analysis:
+
+```- Where in Sweden should a family move to find affordable housing, good schools, and healthcare?
+
 - Investigate the connection between unemployment and mental illness in Västernorrland.
-- Identify municipalities with the highest increase in preschool quality over the last five years.
+
+The server listens on the port defined by the `PORT` environment variable (defaults to `8000`). Clients should connect to the `/sse` endpoint for Server-Sent Events.- Identify municipalities with the highest increase in preschool quality over the last five years.
+
 - Create a dashboard visualizing municipalities with the best and worst public transportation.
 
 ## Features
