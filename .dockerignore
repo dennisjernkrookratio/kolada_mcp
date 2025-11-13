@@ -1,0 +1,8 @@
+.git
+.vscode
+__pycache__
+*.pyc
+.venv
+src/kolada_mcp/__pycache__/
+src/kolada_mcp.egg-info/
+tests/
